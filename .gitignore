@@ -1,0 +1,60 @@
+# Secrets / environment
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+dist/
+coverage/
+
+# IDE / OS
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local data / volumes
+.data/
+data/
+postgres_data/
+redis_data/
+minio_data/
+odoo_data/
+n8n_data/
+
+# Runtime / logs
+*.log
+logs/
+tmp/
+temp/
+
+# Credentials / certificates
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
+service-account*.json
+
+# Generated eval reports
+evals/reports/*
+!evals/reports/.gitkeep
+
+# Generated sample artifacts
+sample-data/generated/

@@ -1,0 +1,7 @@
+name: ordernexa
+
+# Stage 1 will populate the production-quality local infrastructure stack:
+# PostgreSQL + pgvector, Redis, MinIO, Odoo + DB, and n8n.
+# FastAPI, Celery, Next.js and observability services are added in later stages.
+
+services: {}
