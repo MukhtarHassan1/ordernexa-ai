@@ -1,7 +1,468 @@
 name: ordernexa
 
-# Stage 1 will populate the production-quality local infrastructure stack:
-# PostgreSQL + pgvector, Redis, MinIO, Odoo + DB, and n8n.
-# FastAPI, Celery, Next.js and observability services are added in later stages.
+services:
 
-services: {}
+  # ==========================================================
+  # ORDERNEXA PRIMARY DATABASE
+  # PostgreSQL 17 + pgvector
+  # Authoritative application database
+  # ==========================================================
+  postgres:
+    image: pgvector/pgvector:0.8.6-pg17-bookworm
+    container_name: ordernexa-postgres
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    ports:
+      - "127.0.0.1:5432:5432"
+
+    volumes:
+      - ordernexa_postgres_data:/var/lib/postgresql/data
+      - ./infra/docker/postgres/init:/docker-entrypoint-initdb.d:ro
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+    networks:
+      - ordernexa_network
+
+
+  # ==========================================================
+  # REDIS
+  # Queue / cache / future Celery broker
+  # ==========================================================
+  redis:
+    image: redis:8.10.1-alpine
+    container_name: ordernexa-redis
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    command:
+      - /bin/sh
+      - -c
+      - |
+        exec redis-server \
+          --appendonly yes \
+          --requirepass "$$REDIS_PASSWORD"
+
+    ports:
+      - "127.0.0.1:6379:6379"
+
+    volumes:
+      - ordernexa_redis_data:/data
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "redis-cli -a \"$$REDIS_PASSWORD\" ping 2>/dev/null | grep -q PONG"
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+    networks:
+      - ordernexa_network
+
+
+  # ==========================================================
+  # MINIO
+  # S3-compatible object storage
+  #
+  # Stores:
+  # - purchase orders
+  # - attachments
+  # - contract documents
+  # - spreadsheets
+  # - images
+  # - generated artifacts
+  # - future AI/evaluation artifacts
+  # ==========================================================
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    container_name: ordernexa-minio
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    command:
+      - server
+      - /data
+      - --console-address
+      - ":9001"
+
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+
+    volumes:
+      - ordernexa_minio_data:/data
+
+    networks:
+      - ordernexa_network
+
+
+  # ==========================================================
+  # MINIO ONE-TIME INITIALIZATION
+  #
+  # Creates and verifies the private OrderNexa artifact bucket.
+  #
+  # Correct final state:
+  # Exited (0)
+  # ==========================================================
+  minio-init:
+    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
+    container_name: ordernexa-minio-init
+
+    depends_on:
+      minio:
+        condition: service_started
+
+    env_file:
+      - .env
+
+    entrypoint:
+      - /bin/sh
+      - -c
+
+    command:
+      - |
+        set -eu
+
+        echo "Waiting for MinIO..."
+
+        attempt=0
+        max_attempts=15
+
+        until mc alias set \
+          ordernexa \
+          http://minio:9000 \
+          "$$MINIO_ROOT_USER" \
+          "$$MINIO_ROOT_PASSWORD"
+        do
+          attempt=$$((attempt + 1))
+
+          if [ "$$attempt" -ge "$$max_attempts" ]; then
+            echo "ERROR: Unable to connect/authenticate to MinIO after $$max_attempts attempts."
+            exit 1
+          fi
+
+          echo "MinIO connection/authentication attempt $$attempt/$$max_attempts failed. Retrying in 2 seconds..."
+          sleep 2
+        done
+
+        echo "Connected to MinIO."
+
+        if [ -z "$${MINIO_BUCKET:-}" ]; then
+          echo "ERROR: MINIO_BUCKET is not configured."
+          exit 1
+        fi
+
+        echo "Ensuring bucket '$$MINIO_BUCKET' exists..."
+
+        mc mb \
+          --ignore-existing \
+          "ordernexa/$$MINIO_BUCKET"
+
+        echo "Ensuring bucket '$$MINIO_BUCKET' is private..."
+
+        mc anonymous set \
+          none \
+          "ordernexa/$$MINIO_BUCKET"
+
+        echo "Verifying bucket..."
+
+        mc stat \
+          "ordernexa/$$MINIO_BUCKET"
+
+        echo "MinIO initialization completed successfully."
+        echo "Bucket '$$MINIO_BUCKET' is ready."
+
+    restart: "no"
+
+    networks:
+      - ordernexa_network
+
+
+  # ==========================================================
+  # ODOO DATABASE
+  # PostgreSQL backend dedicated to Odoo
+  #
+  # IMPORTANT:
+  # PostgreSQL starts with its normal maintenance database
+  # "postgres".
+  #
+  # Odoo will create the actual Atlas ERP database:
+  # atlas_industrial
+  #
+  # This database remains separate from OrderNexa's
+  # authoritative application database.
+  # ==========================================================
+  odoo-db:
+    image: postgres:15.19-bookworm
+    container_name: ordernexa-odoo-db
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: ${ODOO_DB_USER}
+      POSTGRES_PASSWORD: ${ODOO_DB_PASSWORD}
+      PGDATA: /var/lib/postgresql/data/pgdata
+
+    volumes:
+      - ordernexa_odoo_db_data:/var/lib/postgresql/data/pgdata
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U \"$$POSTGRES_USER\" -d postgres"
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+      start_period: 10s
+
+    networks:
+      - ordernexa_network
+
+
+  # ==========================================================
+  # ODOO COMMUNITY ERP
+  #
+  # Odoo represents the external ERP system in our demo.
+  #
+  # OrderNexa will access it through an ERPProvider adapter.
+  # Odoo does NOT own OrderNexa transaction state.
+  # ==========================================================
+  odoo:
+    image: odoo:19.0-20260908
+    container_name: ordernexa-odoo
+    restart: unless-stopped
+
+    depends_on:
+      odoo-db:
+        condition: service_healthy
+
+    env_file:
+      - .env
+
+    environment:
+      HOST: odoo-db
+      PORT: 5432
+      USER: ${ODOO_DB_USER}
+      PASSWORD: ${ODOO_DB_PASSWORD}
+
+    ports:
+      - "127.0.0.1:8069:8069"
+
+    volumes:
+      - ordernexa_odoo_data:/var/lib/odoo
+      - ./infra/docker/odoo/addons:/mnt/extra-addons
+
+    networks:
+      - ordernexa_network
+
+
+  # ==========================================================
+  # N8N DATABASE
+  #
+  # Dedicated PostgreSQL database for n8n.
+  # n8n must never become OrderNexa's source of truth.
+  # ==========================================================
+  n8n-db:
+    image: postgres:17.11-bookworm
+    container_name: ordernexa-n8n-db
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    environment:
+      POSTGRES_DB: ${N8N_DB_NAME}
+      POSTGRES_USER: ${N8N_DB_USER}
+      POSTGRES_PASSWORD: ${N8N_DB_PASSWORD}
+
+    volumes:
+      - ordernexa_n8n_db_data:/var/lib/postgresql/data
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+      start_period: 10s
+
+    networks:
+      - ordernexa_network
+
+
+  # ==========================================================
+  # N8N COMMUNITY
+  #
+  # Integration/orchestration layer only.
+  #
+  # FastAPI owns:
+  # - transaction state
+  # - policies
+  # - idempotency
+  # - checkpoints
+  # - audit
+  # - recovery authority
+  # ==========================================================
+  n8n:
+    image: n8nio/n8n:stable
+    container_name: ordernexa-n8n
+    restart: unless-stopped
+
+    depends_on:
+      n8n-db:
+        condition: service_healthy
+
+    env_file:
+      - .env
+
+    environment:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: n8n-db
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${N8N_DB_NAME}
+      DB_POSTGRESDB_USER: ${N8N_DB_USER}
+      DB_POSTGRESDB_PASSWORD: ${N8N_DB_PASSWORD}
+
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+
+      N8N_HOST: localhost
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      WEBHOOK_URL: ${N8N_WEBHOOK_URL}
+
+      # Local development only.
+      # Production HTTPS deployment will use secure cookies.
+      N8N_SECURE_COOKIE: "false"
+
+      GENERIC_TIMEZONE: UTC
+      TZ: UTC
+
+    ports:
+      - "127.0.0.1:5678:5678"
+
+    volumes:
+      - ordernexa_n8n_data:/home/node/.n8n
+      - ./workflows/n8n:/files
+
+    networks:
+      - ordernexa_network
+
+
+  # ==========================================================
+  # ORDERNEXA FASTAPI BACKEND
+  #
+  # Authoritative business application.
+  #
+  # Owns:
+  # - Transaction Digital Twin
+  # - state machine
+  # - policies
+  # - approvals
+  # - idempotency
+  # - AI decision records
+  # - checkpoints
+  # - recovery
+  # - audit/lineage
+  # ==========================================================
+  api:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+
+    container_name: ordernexa-api
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+      redis:
+        condition: service_healthy
+
+      minio-init:
+        condition: service_completed_successfully
+
+    ports:
+      - "127.0.0.1:8000:8000"
+
+    volumes:
+      - ./apps/api:/app
+
+    # Allows the Dockerized backend to access local Ollama.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    networks:
+      - ordernexa_network
+
+
+# ============================================================
+# INTERNAL ORDERNEXA NETWORK
+#
+# Internal service addresses:
+#
+# postgres:5432
+# redis:6379
+# minio:9000
+# odoo:8069
+# n8n:5678
+# api:8000
+# ============================================================
+networks:
+  ordernexa_network:
+    name: ordernexa-network
+    driver: bridge
+
+
+# ============================================================
+# PERSISTENT STORAGE
+# ============================================================
+volumes:
+
+  # OrderNexa authoritative application data
+  ordernexa_postgres_data:
+
+  # Redis persistence
+  ordernexa_redis_data:
+
+  # Documents / binary artifacts
+  ordernexa_minio_data:
+
+  # Odoo ERP
+  ordernexa_odoo_db_data:
+  ordernexa_odoo_data:
+
+  # n8n
+  ordernexa_n8n_db_data:
+  ordernexa_n8n_data:
