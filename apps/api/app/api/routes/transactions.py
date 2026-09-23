@@ -8,12 +8,12 @@ from app.schemas.transaction import (
     TransactionEventRead,
     TransactionRead,
 )
-from app.services.state_machine import InvalidStateTransition
 from app.services.transaction_service import (
     advance_transaction,
     create_transaction,
     get_timeline,
     get_transaction,
+    get_transaction_for_update,
     list_transactions,
 )
 
@@ -33,7 +33,10 @@ async def create(
     data: TransactionCreate,
     db: AsyncSession = Depends(get_db),
 ):
-    return await create_transaction(db, data)
+    return await create_transaction(
+        db,
+        data,
+    )
 
 
 @router.get(
@@ -61,7 +64,7 @@ async def get_one(
 
     if transaction is None:
         raise HTTPException(
-            status_code=404,
+            status_code=status.HTTP_404_NOT_FOUND,
             detail="Transaction not found",
         )
 
@@ -83,7 +86,7 @@ async def timeline(
 
     if transaction is None:
         raise HTTPException(
-            status_code=404,
+            status_code=status.HTTP_404_NOT_FOUND,
             detail="Transaction not found",
         )
 
@@ -102,14 +105,14 @@ async def advance(
     data: TransactionAdvance,
     db: AsyncSession = Depends(get_db),
 ):
-    transaction = await get_transaction(
+    transaction = await get_transaction_for_update(
         db,
         public_id,
     )
 
     if transaction is None:
         raise HTTPException(
-            status_code=404,
+            status_code=status.HTTP_404_NOT_FOUND,
             detail="Transaction not found",
         )
 
@@ -121,7 +124,9 @@ async def advance(
         )
 
     except ValueError as exc:
+        await db.rollback()
+
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc

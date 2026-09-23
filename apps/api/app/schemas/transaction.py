@@ -18,8 +18,13 @@ class TransactionCreate(BaseModel):
         examples=["PURCHASE_ORDER"],
     )
 
+    customer_reference: str | None = Field(
+        default=None,
+        max_length=100,
+    )
+
     currency: str = Field(
-        default="USD",
+        default="GBP",
         min_length=3,
         max_length=3,
     )
@@ -35,6 +40,8 @@ class TransactionRead(BaseModel):
 
     id: UUID
     public_id: str
+    correlation_id: str | None
+    customer_reference: str | None
     source: str
     intent: str | None
     customer_id: UUID | None
@@ -43,6 +50,7 @@ class TransactionRead(BaseModel):
     status: str
     risk: str
     autonomy_level: int
+    version: int
     created_at: datetime
     updated_at: datetime
     completed_at: datetime | None

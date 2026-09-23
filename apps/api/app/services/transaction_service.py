@@ -1,6 +1,7 @@
 import hashlib
 import json
 from datetime import UTC, datetime
+from uuid import uuid4
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,23 +40,27 @@ async def create_transaction(
     data: TransactionCreate,
 ) -> Transaction:
     public_id = await _next_public_id(session)
+    correlation_id = uuid4().hex
 
     transaction = Transaction(
         public_id=public_id,
+        correlation_id=correlation_id,
+        customer_reference=data.customer_reference,
         source=data.source.upper(),
         intent=data.intent,
         currency=data.currency.upper(),
         value=data.value,
         status=TransactionStatus.RECEIVED.value,
+        version=1,
     )
 
     session.add(transaction)
-
     await session.flush()
 
     payload = {
         "source": transaction.source,
         "intent": transaction.intent,
+        "customer_reference": transaction.customer_reference,
     }
 
     event = TransactionEvent(
@@ -65,6 +70,7 @@ async def create_transaction(
         event_type="TRANSACTION_RECEIVED",
         payload=payload,
         payload_hash=_payload_hash(payload),
+        trace_id=transaction.correlation_id,
     )
 
     session.add(event)
@@ -93,6 +99,19 @@ async def get_transaction(
     result = await session.execute(
         select(Transaction)
         .where(Transaction.public_id == public_id)
+    )
+
+    return result.scalar_one_or_none()
+
+
+async def get_transaction_for_update(
+    session: AsyncSession,
+    public_id: str,
+) -> Transaction | None:
+    result = await session.execute(
+        select(Transaction)
+        .where(Transaction.public_id == public_id)
+        .with_for_update()
     )
 
     return result.scalar_one_or_none()
@@ -129,6 +148,7 @@ async def advance_transaction(
     previous_status = transaction.status
 
     transaction.status = target_status.value
+    transaction.version += 1
 
     if target_status == TransactionStatus.COMPLETED:
         transaction.completed_at = datetime.now(UTC)
@@ -136,6 +156,7 @@ async def advance_transaction(
     payload = {
         "from_status": previous_status,
         "to_status": target_status.value,
+        "transaction_version": transaction.version,
         **data.payload,
     }
 
@@ -147,6 +168,7 @@ async def advance_transaction(
         event_type=data.event_type,
         payload=payload,
         payload_hash=_payload_hash(payload),
+        trace_id=transaction.correlation_id,
     )
 
     session.add(event)

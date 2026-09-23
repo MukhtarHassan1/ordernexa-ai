@@ -1,0 +1,24 @@
+{
+  "po_number": "PO-88192",
+  "customer_hint": "Northstar Engineering",
+  "customer_domain": "northstar-engineering.com",
+  "currency": "GBP",
+  "delivery_warehouse_code": "MAN",
+  "requested_delivery_date": "2026-09-30",
+  "lines": [
+    {
+      "line_number": 1,
+      "product_term": "XTR-42",
+      "quantity": 40,
+      "uom": "EA",
+      "requested_unit_price": 260
+    },
+    {
+      "line_number": 2,
+      "product_term": "BRK-90",
+      "quantity": 15,
+      "uom": "EA",
+      "requested_unit_price": 165
+    }
+  ]
+}

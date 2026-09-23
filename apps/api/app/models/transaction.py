@@ -8,7 +8,6 @@ from sqlalchemy import (
     Integer,
     Numeric,
     String,
-    Text,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
@@ -33,6 +32,19 @@ class Transaction(Base):
         index=True,
     )
 
+    correlation_id: Mapped[str | None] = mapped_column(
+        String(64),
+        unique=True,
+        nullable=True,
+        index=True,
+    )
+
+    customer_reference: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+        index=True,
+    )
+
     source: Mapped[str] = mapped_column(
         String(50),
         nullable=False,
@@ -45,7 +57,13 @@ class Transaction(Base):
 
     customer_id: Mapped[UUID | None] = mapped_column(
         PGUUID(as_uuid=True),
+        ForeignKey(
+            "customers.id",
+            ondelete="SET NULL",
+            name="fk_transactions_customer_id_customers",
+        ),
         nullable=True,
+        index=True,
     )
 
     value: Mapped[Decimal | None] = mapped_column(
@@ -56,7 +74,7 @@ class Transaction(Base):
     currency: Mapped[str] = mapped_column(
         String(3),
         nullable=False,
-        default="USD",
+        default="GBP",
     )
 
     status: Mapped[str] = mapped_column(
@@ -76,6 +94,13 @@ class Transaction(Base):
         Integer,
         nullable=False,
         default=0,
+    )
+
+    version: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+        server_default="1",
     )
 
     created_at: Mapped[datetime] = mapped_column(
@@ -114,7 +139,10 @@ class TransactionEvent(Base):
 
     transaction_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True),
-        ForeignKey("transactions.id", ondelete="CASCADE"),
+        ForeignKey(
+            "transactions.id",
+            ondelete="CASCADE",
+        ),
         nullable=False,
         index=True,
     )
