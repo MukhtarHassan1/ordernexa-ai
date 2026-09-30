@@ -1,46 +1,36 @@
-# OrderNexa AI
+# OrderNexa AI — NECTELIS Customer-to-Cash flagship
 
-**Agentic Customer-to-Cash Operations Platform**
+**A source-grounded, human-governed AI operations system for B2B purchase orders.**
 
-> From messy customer requests to verified business transactions.
+**Architecture:** customer documents and emails → persistent intake → local Ollama document understanding → source-grounded review → authoritative customer, SKU, pricing, inventory and credit policies → role-based approval → idempotent, verified Odoo execution → archive and optional external sync → audit, recovery and actual evaluation.
 
-## Project status
+> AI handles ambiguity. Software handles authority. ERP handles truth. Humans govern consequential exceptions.
 
-Stage 0 — Product Foundation.
+## Install this release
 
-The complete blueprint remains the scope. V1, V1.5, reliability, governance, AI evaluation, voice, payments, Microsoft 365, ERP/CRM integrations, observability, self-healing recovery, and planned advanced extensions are not removed.
+**First read [`INSTALL-NEW-RELEASE.md`](INSTALL-NEW-RELEASE.md)** and follow [`docs/runbooks/ORDERNEXA_20260929_INSTALL_AND_FINISH.md`](docs/runbooks/ORDERNEXA_20260929_INSTALL_AND_FINISH.md). Applying the overlay to your running, backed-up project is safer than replacing the source tree. Neither archive includes `.env`, PostgreSQL/Odoo/MinIO volumes, n8n data or Ollama models.
 
-## Core thesis
+```bash
+cd ~/projects/ordernexa-ai
+# Back up project and databases; overlay the downloaded patch as described in the runbook.
+export COMPOSE_FILE=docker-compose.yml
+docker compose config --quiet
+docker compose up -d postgres redis minio minio-init api
+docker compose exec -T api alembic upgrade head
+curl --fail --max-time 20 http://127.0.0.1:8000/api/v1/health/ready
+```
 
-- AI handles ambiguity.
-- Software handles authority.
-- ERP handles truth.
-- Humans govern consequential exceptions.
+Local Operations Console: **http://127.0.0.1:8000/console/**. Provide the existing local role-specific operator key for restricted actions. Normal ingestion stays review-gated when model output or source evidence conflicts.
 
-## Architecture rule
+## What this release implements
 
-The custom FastAPI transaction engine owns authoritative business-process state. n8n is used for integration and workflow orchestration, but it is not the source of truth for transaction state.
+- Existing multi-format document intake, audited transaction state, deterministic commercial checks, role-approved Odoo execution and recoverable **local** MinIO confirmations.
+- Existing local Ollama integration with separate Windows-native text and vision models, confidence-format normalization, source-grounding, and human-verified review; **raw Qwen accuracy is not autonomous-release quality**.
+- Extended responsive local frontend: Operations overview, transaction detail, approval and recovery, document review, integration/AI health, **durable automation jobs, explicit external-sync consent, voice change-request review, audit search and real evaluation report listing**.
+- New PostgreSQL migration and optional low-memory **durable automation worker**: lease-based job queue, idempotent event ingress, safe partial recovery/reconciliation, real Graph transport/authorization helpers, S3/MinIO document persistence and optional **explicitly authorized** SharePoint, HubSpot, Teams-notification and *unsent* Outlook-draft operations.
+- Three **inactive**, importable n8n workflow templates, a local source-grounded evaluation harness, a separate set of **500 generated UNCURATED DRAFT cases requiring human labeling**, and offline safety/contract tests.
+- Guarded voice lookup and **review-only** change-request API for later Vapi wiring. No voice call can directly change or approve an order.
 
-## Locked stack
+**What is not claimed complete:** verified live Microsoft/HubSpot/Vapi permissions and external behavior; Graph missed-notification delta resync; production OAuth/OIDC; an external-hosted frontend; measured 500-case accuracy; autonomous L4 execution; Stripe sandbox payment; full Ask Ops AI; or production rollout. Detailed evidence and remaining dependencies are in [`RELEASE-STATUS.md`](RELEASE-STATUS.md) and [`docs/architecture/20260929_BLUEPRINT_GAP_AND_EVIDENCE.md`](docs/architecture/20260929_BLUEPRINT_GAP_AND_EVIDENCE.md).
 
-- Frontend: Next.js, React, TypeScript, Tailwind CSS, shadcn/ui, Recharts
-- Backend: Python, FastAPI, Pydantic, SQLAlchemy, Alembic
-- Database: PostgreSQL + pgvector
-- Queue/cache: Redis + Celery
-- Object storage: MinIO locally / S3-compatible abstraction
-- Automation: n8n
-- AI: OpenAI + Anthropic behind an AIProvider abstraction
-- ERP: Odoo (deep V1 adapter)
-- CRM: HubSpot
-- Microsoft: Graph, Outlook, Teams, SharePoint
-- Voice: Vapi + Twilio
-- Payments: Stripe Sandbox
-- Observability: OpenTelemetry + structured logging
-- Runtime: Docker / Docker Compose
-- CI/CD: GitHub Actions
-
-## Development environment
-
-Recommended workstation: Windows 11 + WSL2 + Ubuntu LTS + Docker Desktop + VS Code WSL.
-
-Keep real secrets in `.env` only. Never commit `.env`.
+The API owns authoritative transaction state. n8n is transport/orchestration **only**. External writes remain off by default (`AUTOMATION_LIVE_WRITES=false`), and ambiguous remote results are quarantined rather than silently replayed.

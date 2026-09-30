@@ -1,0 +1,117 @@
+{
+  "name": "OrderNexa \u2014 Manual Intake Contract Smoke Test (INACTIVE)",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "ef8a300f-d212-4ca0-b12a-25e1895a70be",
+      "name": "Manual run (synthetic only)",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        180,
+        250
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "95af89b2-afb8-490b-a3d1-17363865a0f0",
+              "name": "event_id",
+              "type": "string",
+              "value": "smoke-po-88192-local-001"
+            },
+            {
+              "id": "ed8e9e9f-b104-462e-a501-9146824c6798",
+              "name": "subject",
+              "type": "string",
+              "value": "Synthetic PO smoke test"
+            },
+            {
+              "id": "826b10ca-d0ac-4e3e-a2e9-c9fc10237b1e",
+              "name": "sender",
+              "type": "string",
+              "value": "synthetic@example.invalid"
+            },
+            {
+              "id": "cae07187-6138-427a-8a62-86cb1d87a73f",
+              "name": "filename",
+              "type": "string",
+              "value": "synthetic-po.txt"
+            },
+            {
+              "id": "defcd882-f7b3-4776-a93c-2319000f35c4",
+              "name": "body_text",
+              "type": "string",
+              "value": "PURCHASE ORDER\nPO Number: PO-N8N-SMOKE-001\nCustomer:\nNorthstar Engineering Ltd\nDeliver To: Manchester, United Kingdom\nRequested Delivery Date: 30 September 2026\nCurrency: GBP\nLine 1\nProduct: XTR-42\nQuantity: 40 EA\nRequested Unit Price: GBP 260.00\nLine 2\nProduct: BRK-90\nQuantity: 15 EA\nRequested Unit Price: GBP 165.00\n"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "5d167884-5c94-4a38-9f0c-631088a56333",
+      "name": "Synthetic documented envelope",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        430,
+        250
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://api:8000/api/v1/automation/n8n/intake",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "ecc60e9c-54c8-4323-9dab-f8c809c24131",
+      "name": "Queue in OrderNexa (set Header Auth credential)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        690,
+        250
+      ]
+    }
+  ],
+  "connections": {
+    "Manual run (synthetic only)": {
+      "main": [
+        [
+          {
+            "node": "Synthetic documented envelope",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Synthetic documented envelope": {
+      "main": [
+        [
+          {
+            "node": "Queue in OrderNexa (set Header Auth credential)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "description": "No private secrets. Configure n8n Header Auth credential X-OrderNexa-Ingest-Secret before executing. Static event key demonstrates idempotency."
+  }
+}

@@ -4,8 +4,6 @@ services:
 
   # ==========================================================
   # ORDERNEXA PRIMARY DATABASE
-  # PostgreSQL 17 + pgvector
-  # Authoritative application database
   # ==========================================================
   postgres:
     image: pgvector/pgvector:0.8.6-pg17-bookworm
@@ -24,10 +22,8 @@ services:
 
     healthcheck:
       test:
-        [
-          "CMD-SHELL",
-          "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""
-        ]
+        - CMD-SHELL
+        - 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"'
       interval: 5s
       timeout: 5s
       retries: 10
@@ -39,7 +35,6 @@ services:
 
   # ==========================================================
   # REDIS
-  # Queue / cache / future Celery broker
   # ==========================================================
   redis:
     image: redis:8.10.1-alpine
@@ -65,10 +60,8 @@ services:
 
     healthcheck:
       test:
-        [
-          "CMD-SHELL",
-          "redis-cli -a \"$$REDIS_PASSWORD\" ping 2>/dev/null | grep -q PONG"
-        ]
+        - CMD-SHELL
+        - 'redis-cli -a "$$REDIS_PASSWORD" ping 2>/dev/null | grep -q PONG'
       interval: 5s
       timeout: 5s
       retries: 10
@@ -80,16 +73,7 @@ services:
 
   # ==========================================================
   # MINIO
-  # S3-compatible object storage
-  #
-  # Stores:
-  # - purchase orders
-  # - attachments
-  # - contract documents
-  # - spreadsheets
-  # - images
-  # - generated artifacts
-  # - future AI/evaluation artifacts
+  # Private S3-compatible object storage
   # ==========================================================
   minio:
     image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
@@ -117,12 +101,8 @@ services:
 
 
   # ==========================================================
-  # MINIO ONE-TIME INITIALIZATION
-  #
-  # Creates and verifies the private OrderNexa artifact bucket.
-  #
-  # Correct final state:
-  # Exited (0)
+  # MINIO INITIALIZATION
+  # One-time private bucket creation
   # ==========================================================
   minio-init:
     image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
@@ -157,40 +137,27 @@ services:
           attempt=$$((attempt + 1))
 
           if [ "$$attempt" -ge "$$max_attempts" ]; then
-            echo "ERROR: Unable to connect/authenticate to MinIO after $$max_attempts attempts."
+            echo "ERROR: Cannot connect/authenticate to MinIO after $$max_attempts attempts."
             exit 1
           fi
 
-          echo "MinIO connection/authentication attempt $$attempt/$$max_attempts failed. Retrying in 2 seconds..."
+          echo "MinIO attempt $$attempt/$$max_attempts failed; retrying in 2 seconds..."
+
           sleep 2
         done
-
-        echo "Connected to MinIO."
 
         if [ -z "$${MINIO_BUCKET:-}" ]; then
           echo "ERROR: MINIO_BUCKET is not configured."
           exit 1
         fi
 
-        echo "Ensuring bucket '$$MINIO_BUCKET' exists..."
+        mc mb --ignore-existing "ordernexa/$$MINIO_BUCKET"
 
-        mc mb \
-          --ignore-existing \
-          "ordernexa/$$MINIO_BUCKET"
+        mc anonymous set none "ordernexa/$$MINIO_BUCKET"
 
-        echo "Ensuring bucket '$$MINIO_BUCKET' is private..."
+        mc stat "ordernexa/$$MINIO_BUCKET"
 
-        mc anonymous set \
-          none \
-          "ordernexa/$$MINIO_BUCKET"
-
-        echo "Verifying bucket..."
-
-        mc stat \
-          "ordernexa/$$MINIO_BUCKET"
-
-        echo "MinIO initialization completed successfully."
-        echo "Bucket '$$MINIO_BUCKET' is ready."
+        echo "Private bucket '$$MINIO_BUCKET' is ready."
 
     restart: "no"
 
@@ -200,17 +167,6 @@ services:
 
   # ==========================================================
   # ODOO DATABASE
-  # PostgreSQL backend dedicated to Odoo
-  #
-  # IMPORTANT:
-  # PostgreSQL starts with its normal maintenance database
-  # "postgres".
-  #
-  # Odoo will create the actual Atlas ERP database:
-  # atlas_industrial
-  #
-  # This database remains separate from OrderNexa's
-  # authoritative application database.
   # ==========================================================
   odoo-db:
     image: postgres:15.19-bookworm
@@ -231,10 +187,8 @@ services:
 
     healthcheck:
       test:
-        [
-          "CMD-SHELL",
-          "pg_isready -U \"$$POSTGRES_USER\" -d postgres"
-        ]
+        - CMD-SHELL
+        - 'pg_isready -U "$$POSTGRES_USER" -d postgres'
       interval: 5s
       timeout: 5s
       retries: 15
@@ -246,11 +200,7 @@ services:
 
   # ==========================================================
   # ODOO COMMUNITY ERP
-  #
-  # Odoo represents the external ERP system in our demo.
-  #
-  # OrderNexa will access it through an ERPProvider adapter.
-  # Odoo does NOT own OrderNexa transaction state.
+  # External system of record
   # ==========================================================
   odoo:
     image: odoo:19.0-20260908
@@ -270,6 +220,8 @@ services:
       USER: ${ODOO_DB_USER}
       PASSWORD: ${ODOO_DB_PASSWORD}
 
+      ORDERNEXA_ODOO_SHARED_SECRET: ${ORDERNEXA_ODOO_SHARED_SECRET}
+
     ports:
       - "127.0.0.1:8069:8069"
 
@@ -283,9 +235,6 @@ services:
 
   # ==========================================================
   # N8N DATABASE
-  #
-  # Dedicated PostgreSQL database for n8n.
-  # n8n must never become OrderNexa's source of truth.
   # ==========================================================
   n8n-db:
     image: postgres:17.11-bookworm
@@ -305,10 +254,8 @@ services:
 
     healthcheck:
       test:
-        [
-          "CMD-SHELL",
-          "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""
-        ]
+        - CMD-SHELL
+        - 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"'
       interval: 5s
       timeout: 5s
       retries: 15
@@ -320,16 +267,7 @@ services:
 
   # ==========================================================
   # N8N COMMUNITY
-  #
-  # Integration/orchestration layer only.
-  #
-  # FastAPI owns:
-  # - transaction state
-  # - policies
-  # - idempotency
-  # - checkpoints
-  # - audit
-  # - recovery authority
+  # Integration and orchestration only
   # ==========================================================
   n8n:
     image: n8nio/n8n:stable
@@ -358,8 +296,6 @@ services:
       N8N_PROTOCOL: http
       WEBHOOK_URL: ${N8N_WEBHOOK_URL}
 
-      # Local development only.
-      # Production HTTPS deployment will use secure cookies.
       N8N_SECURE_COOKIE: "false"
 
       GENERIC_TIMEZONE: UTC
@@ -376,21 +312,48 @@ services:
       - ordernexa_network
 
 
+    # ==========================================================
+  # OLLAMA
+  # Local CPU AI runtime
+  # ==========================================================
+  ollama:
+    image: ollama/ollama:0.34.1
+    container_name: ordernexa-ollama
+    restart: unless-stopped
+
+    environment:
+      OLLAMA_HOST: "0.0.0.0:11434"
+
+      # Disable Vulkan GPU detection.
+      OLLAMA_VULKAN: "0"
+
+      # Force CPU inference.
+      OLLAMA_LLM_LIBRARY: "cpu_avx2"
+
+      # Disable unnecessary cloud requests.
+      OLLAMA_NO_CLOUD: "true"
+
+      # Restrict concurrent model execution.
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_MAX_LOADED_MODELS: "1"
+
+      # Reduced context for initial testing.
+      OLLAMA_CONTEXT_LENGTH: "4096"
+      OLLAMA_MAX_QUEUE: "8"
+      OLLAMA_LOAD_TIMEOUT: "90s"
+
+      # Enable diagnostic logs.
+      OLLAMA_DEBUG: "1"
+
+    volumes:
+      - ordernexa_ollama_data:/root/.ollama
+
+    networks:
+      - ordernexa_network
+
   # ==========================================================
   # ORDERNEXA FASTAPI BACKEND
-  #
-  # Authoritative business application.
-  #
-  # Owns:
-  # - Transaction Digital Twin
-  # - state machine
-  # - policies
-  # - approvals
-  # - idempotency
-  # - AI decision records
-  # - checkpoints
-  # - recovery
-  # - audit/lineage
+  # Authoritative transaction/business layer
   # ==========================================================
   api:
     build:
@@ -418,8 +381,12 @@ services:
 
     volumes:
       - ./apps/api:/app
+      # Local demo/evaluation assets; not production data mounts.
+      - ./sample-data:/sample-data:ro
+      - ./evals:/evals
 
-    # Allows the Dockerized backend to access local Ollama.
+    # Optional alternative if Ollama runs directly on the host.
+    # Configure OLLAMA_BASE_URL in private .env for the tested Windows-native runtime.
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
@@ -427,17 +394,37 @@ services:
       - ordernexa_network
 
 
+  # ==========================================================
+  # OPTIONAL DURABLE AUTOMATION WORKER
+  # Start separately when configured: docker compose --profile automation up -d automation-worker
+  # Never starts when running the ordinary local API/demo stack.
+  # ==========================================================
+  automation-worker:
+    profiles: ["automation"]
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    container_name: ordernexa-automation-worker
+    restart: unless-stopped
+    command: ["python", "-m", "app.automation.worker"]
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    volumes:
+      - ./apps/api:/app
+      - ./sample-data:/sample-data:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - ordernexa_network
+
+
 # ============================================================
-# INTERNAL ORDERNEXA NETWORK
-#
-# Internal service addresses:
-#
-# postgres:5432
-# redis:6379
-# minio:9000
-# odoo:8069
-# n8n:5678
-# api:8000
+# INTERNAL NETWORK
 # ============================================================
 networks:
   ordernexa_network:
@@ -449,20 +436,14 @@ networks:
 # PERSISTENT STORAGE
 # ============================================================
 volumes:
-
-  # OrderNexa authoritative application data
   ordernexa_postgres_data:
-
-  # Redis persistence
   ordernexa_redis_data:
-
-  # Documents / binary artifacts
   ordernexa_minio_data:
 
-  # Odoo ERP
   ordernexa_odoo_db_data:
   ordernexa_odoo_data:
 
-  # n8n
   ordernexa_n8n_db_data:
   ordernexa_n8n_data:
+
+  ordernexa_ollama_data:

@@ -1,0 +1,66 @@
+{
+  "name": "OrderNexa \u2014 Authenticated General Email / Web Intake Bridge (INACTIVE)",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ordernexa-intake-local-v1",
+        "authentication": "basicAuth",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "0461f77a-8c24-4baa-b7b9-c6c31fa4e176",
+      "name": "Authenticated local webhook (set Basic Auth)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        230,
+        250
+      ],
+      "webhookId": "0461f77a-8c24-4baa-b7b9-c6c31fa4e176"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://api:8000/api/v1/automation/n8n/intake",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "05a66d35-82cd-4b50-8b5a-1984c9391c1d",
+      "name": "Persist and deduplicate in OrderNexa",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        490,
+        250
+      ]
+    }
+  ],
+  "connections": {
+    "Authenticated local webhook (set Basic Auth)": {
+      "main": [
+        [
+          {
+            "node": "Persist and deduplicate in OrderNexa",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "description": "Local-only ingress. n8n Basic Auth and OrderNexa Header Auth credentials MUST be configured in UI; raw PO body is not logged in n8n by default without workflow execution retention configuration."
+  }
+}

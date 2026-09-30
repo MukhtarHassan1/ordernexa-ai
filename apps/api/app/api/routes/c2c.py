@@ -7,6 +7,7 @@ from fastapi import (
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
+from app.core.security import DemoPrincipal, require_operator
 from app.schemas.c2c import (
     ManualOrderInput,
     ManualOrderValidationResponse,
@@ -33,6 +34,7 @@ router = APIRouter(
 async def manual_order(
     data: ManualOrderInput,
     db: AsyncSession = Depends(get_db),
+    principal: DemoPrincipal = Depends(require_operator),
 ):
     try:
         return await create_manual_order(

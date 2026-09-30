@@ -1,0 +1,29 @@
+PURCHASE ORDER
+
+PO Number: PO-88192
+
+Customer:
+Northstar Engineering Ltd
+
+Deliver To:
+Manchester, United Kingdom
+
+Requested Delivery Date:
+30 September 2026
+
+Currency:
+GBP
+
+Line 1
+Product: XTR-42
+Description: Same industrial pump series supplied previously
+Quantity: 40 EA
+Requested Unit Price: GBP 260.00
+
+Line 2
+Product: BRK-90
+Description: Heavy brake assembly
+Quantity: 15 EA
+Requested Unit Price: GBP 165.00
+
+Please process according to our existing framework agreement.

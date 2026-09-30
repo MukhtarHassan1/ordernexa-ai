@@ -1,0 +1,77 @@
+{
+  "name": "OrderNexa \u2014 Read-only Local Operations Digest (INACTIVE)",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "204a201c-286d-4a4e-9bdc-8c4d478dbb86",
+      "name": "Manual audit",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        200,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://api:8000/api/v1/ops/overview",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "82455c52-0a84-4e77-bcf3-83003a3e5240",
+      "name": "Read actual PostgreSQL-backed KPIs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        430,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $input.first().json;\nreturn [{ json: {\n  observed_at: new Date().toISOString(),\n  stored_transactions: d.total_transactions,\n  needs_approval: d.approval_required,\n  blocked_value: d.blocked_revenue,\n  open_incidents: d.open_incidents,\n  verified_erp_orders: d.verified_erp_orders,\n  note: 'Read-only operational metrics from OrderNexa; not an inferred AI summary.'\n}}];"
+      },
+      "id": "e2d0c15b-7203-412e-a155-116182496f08",
+      "name": "Format without generating claims",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        220
+      ]
+    }
+  ],
+  "connections": {
+    "Manual audit": {
+      "main": [
+        [
+          {
+            "node": "Read actual PostgreSQL-backed KPIs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read actual PostgreSQL-backed KPIs": {
+      "main": [
+        [
+          {
+            "node": "Format without generating claims",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "description": "No external sends; business dashboard source of truth remains FastAPI/PostgreSQL."
+  }
+}

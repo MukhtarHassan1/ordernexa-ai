@@ -1,0 +1,51 @@
+name: OrderNexa offline quality
+on:
+  push:
+  pull_request:
+jobs:
+  offline-contracts:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/api
+    env:
+      APP_ENV: development
+      APP_SECRET: ci-fake-do-not-use-outside-tests
+      DATABASE_URL: postgresql+asyncpg://ci:ci@localhost:5432/ci
+      REDIS_URL: redis://localhost:6379/0
+      MINIO_ROOT_USER: ci-fake
+      MINIO_ROOT_PASSWORD: ci-fake
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: apps/api/requirements-dev.txt
+      - name: Install offline test dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Python compile
+        run: python -m compileall -q app tests ../../infra/docker/odoo/addons/ordernexa_connector
+      - name: Run offline tests (external I/O mocked)
+        run: python -m pytest -q tests
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: JavaScript syntax and offline console contract tests
+        run: |
+          node --check app/console/app.js
+          node --check app/console/automation.js
+          node --check app/console/intake_review.js
+          node --test tests-js/*.test.cjs
+      - name: Validate inactive n8n template JSON and draft dataset size
+        run: |
+          python - <<'PY2'
+          import json
+          from pathlib import Path
+          for path in Path('../../workflows/n8n').glob('*.json'):
+              obj=json.loads(path.read_text())
+              assert obj['active'] is False and obj['nodes'] and obj['connections'], path
+          cases = Path('../../evals/datasets/generated_draft_500_REQUIRES_REVIEW.jsonl')
+          if cases.exists():
+              assert sum(bool(line.strip()) for line in cases.open()) == 500
+          PY2

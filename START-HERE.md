@@ -1,53 +1,7 @@
-# Start Here
+# OrderNexa: current installation and development instructions
 
-This ZIP creates the OrderNexa AI project foundation. It intentionally does not install FastAPI, Next.js, Odoo, n8n, or other dependencies yet.
+**September 29 source integration release:** Start with `INSTALL-NEW-RELEASE.md`, then follow `docs/runbooks/ORDERNEXA_20260929_INSTALL_AND_FINISH.md` in order. Do not replay older README-... fixes on top of the current release. Keep the private `.env` and existing Docker volumes; this release **adds a database migration** (`20260929_auto`) and an opt-in worker, unlike the archived older release instructions.
 
-## Recommended active location
+The local Console is at `http://127.0.0.1:8000/console/` after FastAPI starts. Its automation and external sync tabs require your local role-appropriate operator key. Windows-native Ollama remains the configured AI provider, and conflict-triggered human review remains mandatory until independently curated evaluation proves otherwise.
 
-You can keep this ZIP on `E:\` as a backup. For best WSL/Docker performance, use the active working copy inside the Ubuntu filesystem, for example:
-
-`~/projects/ordernexa-ai`
-
-## Verify Windows / WSL
-
-From PowerShell:
-
-```powershell
-wsl --version
-wsl --status
-wsl -l -v
-```
-
-## Verify the Ubuntu development environment
-
-From WSL, inside the project:
-
-```bash
-bash infra/scripts/verify-wsl-env.sh
-```
-
-## Open in VS Code WSL
-
-```bash
-cd ~/projects/ordernexa-ai
-code .
-```
-
-## Initialize local Git only
-
-```bash
-git init
-git branch -M main
-```
-
-No remote is configured, so nothing is uploaded to GitHub.
-
-## Next stage
-
-Stage 1 configures the real Docker Compose infrastructure:
-
-- PostgreSQL + pgvector
-- Redis
-- MinIO
-- Odoo + Odoo database
-- n8n
+`RELEASE-STATUS.md` separates code actually present from genuinely live-verified integrations. `docs/architecture/20260929_BLUEPRINT_GAP_AND_EVIDENCE.md` maps the 38-page NECTELIS scope. The current source files alone cannot activate your external Microsoft, HubSpot, Vapi or Stripe accounts.

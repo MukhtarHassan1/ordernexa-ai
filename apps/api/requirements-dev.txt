@@ -1,0 +1,4 @@
+# Install in a development/test container only; not needed by the running API.
+-r requirements.txt
+pytest==9.0.2
+pytest-asyncio==1.3.0

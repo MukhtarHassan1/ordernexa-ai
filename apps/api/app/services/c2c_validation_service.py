@@ -522,11 +522,13 @@ async def build_fulfillment_plan(
 async def create_manual_order(
     session: AsyncSession,
     data: ManualOrderInput,
+    *,
+    source: str = "MANUAL",
 ) -> ManualOrderValidationResponse:
     transaction = await create_transaction(
         session,
         TransactionCreate(
-            source="MANUAL",
+            source=source,
             intent="PURCHASE_ORDER",
             customer_reference=data.po_number,
             currency=data.currency.upper(),
@@ -539,14 +541,14 @@ async def create_manual_order(
 
     source_artifact = SourceArtifact(
         transaction_id=transaction.id,
-        artifact_type="MANUAL_ORDER_JSON",
+        artifact_type="NORMALIZED_ORDER_JSON",
         original_name=f"{data.po_number}.json",
         mime_type="application/json",
         storage_provider="INLINE",
         sha256=canonical_hash(raw_payload),
         source_ref=data.po_number,
         extra_data={
-            "ingestion_adapter": "MANUAL_API",
+            "ingestion_adapter": source,
         },
     )
 

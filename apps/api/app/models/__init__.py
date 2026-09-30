@@ -43,4 +43,7 @@ __all__ = [
     "IntegrationCommand",
     "Checkpoint",
     "Incident",
+    "AutomationJob",
+    "VoiceChangeRequest",
 ]
+from app.models.automation import AutomationJob, VoiceChangeRequest

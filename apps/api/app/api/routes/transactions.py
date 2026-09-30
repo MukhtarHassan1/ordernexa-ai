@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
+from app.core.security import DemoPrincipal, require_operator
 from app.schemas.transaction import (
     TransactionAdvance,
     TransactionCreate,
@@ -32,6 +33,7 @@ router = APIRouter(
 async def create(
     data: TransactionCreate,
     db: AsyncSession = Depends(get_db),
+    principal: DemoPrincipal = Depends(require_operator),
 ):
     return await create_transaction(
         db,
@@ -104,7 +106,10 @@ async def advance(
     public_id: str,
     data: TransactionAdvance,
     db: AsyncSession = Depends(get_db),
+    principal: DemoPrincipal = Depends(require_operator),
 ):
+    if principal.role != "ADMIN":
+        raise HTTPException(403, "Direct state advances are restricted to local demo administrators.")
     transaction = await get_transaction_for_update(
         db,
         public_id,

@@ -58,3 +58,42 @@ evals/reports/*
 
 # Generated sample artifacts
 sample-data/generated/
+
+# ============================================================
+# Local secrets / credentials
+# ============================================================
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Node
+node_modules/
+.next/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs / temporary files
+*.log
+*.tmp
+*.swp
+
+# Local backups / archives
+*.zip
+*.tar
+*.tar.gz
+ordernexa-backups/
+
+# Test/runtime caches
+.coverage
+htmlcov/
