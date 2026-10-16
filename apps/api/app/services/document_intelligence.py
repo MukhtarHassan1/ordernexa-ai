@@ -1,13 +1,14 @@
-from dataclasses import dataclass
-from io import BytesIO
+from dataclasses import dataclass, field
+from io import BytesIO, StringIO
 from pathlib import Path
+import csv
 
 import pymupdf as fitz
 from openpyxl import load_workbook
 
 from app.schemas.intake import ExtractedOrderDraft
 from app.core.config import settings
-from app.services.source_grounding import ground_draft_against_source
+from app.services.source_grounding import ground_draft_against_source, inspect_source_text
 
 from app.services.ai_gateway import (
     StructuredAIResult,
@@ -20,11 +21,18 @@ from app.services.ai_gateway import (
 # ============================================================
 
 @dataclass
+class DocumentTable:
+    source: str
+    rows: list[list[str]]
+
+
+@dataclass
 class DocumentContent:
     text: str
     images: list[bytes]
     extraction_method: str
     page_count: int
+    tables: list[DocumentTable] = field(default_factory=list)
 
 
 # ============================================================
@@ -48,7 +56,7 @@ SUPPORTED_EXTENSIONS = {
 # ============================================================
 
 DOCUMENT_EXTRACTION_PROMPT_VERSION = (
-    "po-extraction-v1.1.0-source-grounded"
+    "po-extraction-v1.2.0-table-grounded"
 )
 
 MAX_VISION_PAGES = 6
@@ -60,93 +68,91 @@ MIN_NATIVE_PDF_TEXT_LENGTH = 80
 # PDF EXTRACTION
 # ============================================================
 
+def _serialize_tables_for_prompt(tables: list[DocumentTable]) -> str:
+    """Compact deterministic table rendering for the model prompt.
+
+    The same structured rows are independently parsed by source_grounding; this
+    rendering only helps the model understand layout and is never authoritative.
+    """
+    chunks: list[str] = []
+    for table in tables:
+        chunks.append(f"\n--- STRUCTURED TABLE: {table.source} ---")
+        for row_no, row in enumerate(table.rows[:200], start=1):
+            cells = [str(cell).replace("\n", " ").strip() for cell in row]
+            if any(cells):
+                chunks.append(f"ROW {row_no}: " + " | ".join(cells))
+    return "\n".join(chunks)
+
+
 def _extract_pdf(
     data: bytes,
 ) -> DocumentContent:
+    """Extract PDF text plus native table structure when available.
+
+    PyMuPDF native text remains the primary source. For digitally-generated
+    business PDFs, ``Page.find_tables()`` recovers order-line grids that plain
+    text extraction flattens into separate columns. Scanned/image-heavy PDFs
+    still use vision and remain review-gated unless independent text is present.
     """
-    Extract content from PDF documents.
-
-    Prefer native PDF text extraction.
-
-    If insufficient native text is found, render up to
-    MAX_VISION_PAGES pages for multimodal AI extraction.
-    """
-
-    document = fitz.open(
-        stream=data,
-        filetype="pdf",
-    )
-
+    document = fitz.open(stream=data, filetype="pdf")
     try:
         page_count = len(document)
-
         text_parts: list[str] = []
-
-        # ----------------------------------------------------
-        # Attempt native PDF text extraction
-        # ----------------------------------------------------
+        tables: list[DocumentTable] = []
 
         for index, page in enumerate(document):
-            text = page.get_text("text")
-
+            text = page.get_text("text", sort=True)
             if text.strip():
-                text_parts.append(
-                    f"\n--- PAGE {index + 1} ---\n"
-                    f"{text}"
-                )
+                text_parts.append(f"\n--- PAGE {index + 1} ---\n{text}")
 
-        combined_text = "\n".join(
-            text_parts
-        ).strip()
+            # Table extraction is best-effort and must never make a valid PDF
+            # unreadable if a page has unusual vector/layout content.
+            try:
+                finder = page.find_tables()
+                for table_no, table in enumerate(finder.tables, start=1):
+                    extracted = table.extract()
+                    rows = [
+                        ["" if cell is None else str(cell).strip() for cell in row]
+                        for row in extracted
+                        if row and any(str(cell or "").strip() for cell in row)
+                    ]
+                    if len(rows) >= 2:
+                        tables.append(DocumentTable(
+                            source=f"page {index + 1} table {table_no}",
+                            rows=rows,
+                        ))
+            except Exception:
+                # Native text is still usable. Grounding will fail closed if the
+                # line table cannot be verified independently.
+                pass
 
-        # ----------------------------------------------------
-        # Native text extraction succeeded
-        # ----------------------------------------------------
+        combined_text = "\n".join(text_parts).strip()
+        if tables:
+            combined_text = (combined_text + _serialize_tables_for_prompt(tables)).strip()
 
-        if (
-            len(combined_text)
-            >= MIN_NATIVE_PDF_TEXT_LENGTH
-        ):
+        if len(combined_text) >= MIN_NATIVE_PDF_TEXT_LENGTH:
             return DocumentContent(
                 text=combined_text,
                 images=[],
-                extraction_method="PDF_NATIVE_TEXT",
+                extraction_method="PDF_NATIVE_TEXT_TABLES" if tables else "PDF_NATIVE_TEXT",
                 page_count=page_count,
+                tables=tables,
             )
-
-        # ----------------------------------------------------
-        # Scanned or image-heavy PDF
-        # ----------------------------------------------------
 
         images: list[bytes] = []
-
-        pages_to_render = min(
-            MAX_VISION_PAGES,
-            page_count,
-        )
-
-        for index in range(pages_to_render):
-            page = document[index]
-
-            pixmap = page.get_pixmap(
-                matrix=fitz.Matrix(
-                    1.5,
-                    1.5,
-                ),
-                alpha=False,
+        for index in range(min(MAX_VISION_PAGES, page_count)):
+            pixmap = document[index].get_pixmap(
+                matrix=fitz.Matrix(1.5, 1.5), alpha=False
             )
-
-            images.append(
-                pixmap.tobytes("png")
-            )
+            images.append(pixmap.tobytes("png"))
 
         return DocumentContent(
             text=combined_text,
             images=images,
             extraction_method="PDF_VISION",
             page_count=page_count,
+            tables=tables,
         )
-
     finally:
         document.close()
 
@@ -158,63 +164,38 @@ def _extract_pdf(
 def _extract_xlsx(
     data: bytes,
 ) -> DocumentContent:
-    """
-    Extract spreadsheet cell values while preserving
-    sheet names and cell coordinates.
-
-    Uses read-only mode to reduce memory consumption.
-    """
-
-    workbook = load_workbook(
-        filename=BytesIO(data),
-        read_only=True,
-        data_only=True,
-    )
-
+    """Extract spreadsheet values and preserve rectangular rows for grounding."""
+    workbook = load_workbook(filename=BytesIO(data), read_only=True, data_only=True)
     try:
         parts: list[str] = []
-
-        page_count = len(
-            workbook.worksheets
-        )
+        tables: list[DocumentTable] = []
+        page_count = len(workbook.worksheets)
 
         for worksheet in workbook.worksheets:
-            parts.append(
-                f"\n--- SHEET: "
-                f"{worksheet.title} ---"
-            )
-
-            for row_index, row in enumerate(
-                worksheet.iter_rows(),
-                start=1,
-            ):
-                # Limit spreadsheet processing.
+            parts.append(f"\n--- SHEET: {worksheet.title} ---")
+            structured_rows: list[list[str]] = []
+            for row_index, row in enumerate(worksheet.iter_rows(), start=1):
                 if row_index > 500:
                     break
+                raw = ["" if cell.value is None else str(cell.value).strip() for cell in row]
+                while raw and not raw[-1]:
+                    raw.pop()
+                if not any(raw):
+                    continue
+                structured_rows.append(raw)
+                parts.append(" | ".join(
+                    f"{cell.coordinate}={cell.value}" for cell in row if cell.value is not None
+                ))
+            if structured_rows:
+                tables.append(DocumentTable(source=f"sheet {worksheet.title}", rows=structured_rows))
 
-                values: list[str] = []
-
-                for cell in row:
-                    if cell.value is None:
-                        continue
-
-                    values.append(
-                        f"{cell.coordinate}="
-                        f"{cell.value}"
-                    )
-
-                if values:
-                    parts.append(
-                        " | ".join(values)
-                    )
-
+        text = "\n".join(parts)
+        if tables:
+            text += _serialize_tables_for_prompt(tables)
         return DocumentContent(
-            text="\n".join(parts),
-            images=[],
-            extraction_method="XLSX_CELLS",
-            page_count=page_count,
+            text=text, images=[], extraction_method="XLSX_CELLS",
+            page_count=page_count, tables=tables,
         )
-
     finally:
         workbook.close()
 
@@ -290,23 +271,97 @@ def extract_document(
     # Plain text / CSV documents
     # --------------------------------------------------------
 
-    if suffix in {
-        ".txt",
-        ".csv",
-    }:
+    if suffix in {".txt", ".csv"}:
+        decoded = data.decode("utf-8-sig", errors="replace")
+        tables: list[DocumentTable] = []
+        if suffix == ".csv":
+            try:
+                rows = [
+                    [cell.strip() for cell in row]
+                    for row in csv.reader(StringIO(decoded))
+                    if row and any(cell.strip() for cell in row)
+                ][:500]
+                if rows:
+                    tables.append(DocumentTable(source="csv", rows=rows))
+            except csv.Error:
+                pass
+        prompt_text = decoded
+        if tables:
+            prompt_text += _serialize_tables_for_prompt(tables)
         return DocumentContent(
-            text=data.decode(
-                "utf-8",
-                errors="replace",
-            ),
-            images=[],
-            extraction_method="TEXT",
-            page_count=1,
+            text=prompt_text, images=[],
+            extraction_method="CSV_TABLE" if tables else "TEXT",
+            page_count=1, tables=tables,
         )
 
     # Defensive fallback.
     raise ValueError(
         f"Unsupported file type: {suffix}"
+    )
+
+
+# ============================================================
+# HYBRID EXTRACTION: DETERMINISTIC FIRST, AI FOR AMBIGUITY
+# ============================================================
+
+def _deterministic_source_result(document: DocumentContent) -> StructuredAIResult | None:
+    """Return a fast source-grounded draft when no model reasoning is needed.
+
+    Clean digital purchase orders and well-structured spreadsheets should not
+    wait on an LLM merely to copy explicit fields. AI is reserved for ambiguous
+    or genuinely unstructured input. This also removes model hallucination from
+    the easiest path while preserving all downstream business validation.
+    """
+    if not document.text.strip() or document.images:
+        return None
+    source = inspect_source_text(document.text, tables=document.tables)
+    critical = ("po_number", "customer_hint", "currency", "delivery_location", "delivery_warehouse_code")
+    if (source.document_type != "PURCHASE_ORDER" or source.warnings or source.ambiguous
+            or source.lines is None or not source.lines
+            or any(name not in source.fields for name in critical)):
+        return None
+
+    evidence = list(dict.fromkeys(
+        proof for value in source.fields.values() for proof in value.evidence
+    )) + list(dict.fromkeys(source.line_evidence))
+    draft = ExtractedOrderDraft(
+        document_type="PURCHASE_ORDER",
+        po_number=str(source.fields["po_number"].value),
+        customer_hint=str(source.fields["customer_hint"].value),
+        customer_domain=None,
+        currency=str(source.fields["currency"].value).upper(),
+        delivery_location=str(source.fields["delivery_location"].value),
+        delivery_warehouse_code=str(source.fields["delivery_warehouse_code"].value),
+        requested_delivery_date=(
+            source.fields["requested_delivery_date"].value
+            if "requested_delivery_date" in source.fields else None
+        ),
+        lines=source.lines,
+        overall_confidence=0.99,
+        evidence=evidence,
+        missing_fields=[],
+        risk_flags=[],
+    )
+    verified = [*critical, "document_type", "lines"]
+    if "requested_delivery_date" in source.fields:
+        verified.append("requested_delivery_date")
+    return StructuredAIResult(
+        data=draft,
+        raw_content=draft.model_dump_json(),
+        provider="DETERMINISTIC_SOURCE",
+        model="source-grounding-v2",
+        usage={
+            "fast_path": True,
+            "elapsed_seconds": 0.0,
+            "source_grounding": {
+                "verified_fields": verified,
+                "corrected_fields": [],
+                "requires_human_review": False,
+                "review_reasons": [],
+                "source_warning_count": 0,
+                "source_table_grounding": bool(source.line_evidence),
+            },
+        },
     )
 
 
@@ -327,6 +382,10 @@ async def extract_order_draft(
     Business validation, pricing, inventory,
     credit and approvals are handled separately.
     """
+
+    fast_result = _deterministic_source_result(document)
+    if fast_result is not None:
+        return fast_result
 
     provider = get_ai_provider()
 
@@ -366,9 +425,14 @@ DOCUMENT RULES:
 - Manchester maps to warehouse code MAN.
 - London maps to warehouse code LON.
 - Rotterdam maps to warehouse code RTM.
-- Important: a label may have its value on the NEXT non-empty line;
-  inspect PO Number, Customer, Deliver To, Requested Delivery Date,
-  Currency and line item fields before claiming they are missing.
+- Important: business PDFs often flatten columns in native text. When a
+  STRUCTURED TABLE section is present, use its rows and headers for line items.
+- A label may have its value on the NEXT non-empty line; inspect PO Number,
+  Customer/Buyer/Bill To, Ship To, Requested Delivery/Required By, Currency,
+  and line item fields before claiming they are missing.
+- Purchase orders commonly identify the buyer in the document letterhead or
+  Ship To / Bill To block rather than a literal Customer field. Preserve the
+  organization name as customer_hint; do not invent a CRM identity.
 - Parse unambiguous full-text dates exactly. For example,
   30 September 2026 is 2026-09-30, never another century.
 - Provide short, literal factual evidence strings from the document.
@@ -430,7 +494,7 @@ DOCUMENT RULES:
         }
     elif document.text.strip():
         grounded, report = ground_draft_against_source(
-            ai_result.data, document.text
+            ai_result.data, document.text, tables=document.tables
         )
         ai_result.data = grounded
         ai_result.usage["source_grounding"] = report

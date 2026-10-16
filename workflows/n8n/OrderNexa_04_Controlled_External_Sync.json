@@ -1,0 +1,153 @@
+{
+  "name": "OrderNexa \u2014 Controlled External Sync Scheduler (INACTIVE)",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "d07ca5bd-9af9-49c6-a9d4-5bfce6fda001",
+      "name": "Manual operator run",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        160,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "f1",
+              "name": "transaction_public_id",
+              "type": "string",
+              "value": "TXN-2026-000036"
+            },
+            {
+              "id": "f2",
+              "name": "sharepoint",
+              "type": "boolean",
+              "value": true
+            },
+            {
+              "id": "f3",
+              "name": "hubspot",
+              "type": "boolean",
+              "value": false
+            },
+            {
+              "id": "f4",
+              "name": "outlook_draft",
+              "type": "boolean",
+              "value": false
+            },
+            {
+              "id": "f5",
+              "name": "teams_notify",
+              "type": "boolean",
+              "value": false
+            },
+            {
+              "id": "f6",
+              "name": "verified_contact_email",
+              "type": "string",
+              "value": ""
+            },
+            {
+              "id": "f7",
+              "name": "confirm_external_data_transfer",
+              "type": "boolean",
+              "value": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "d07ca5bd-9af9-49c6-a9d4-5bfce6fda002",
+      "name": "Explicit sync plan",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        400,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://api:8000/api/v1/automation/transactions/{{$json.transaction_public_id}}/schedule",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({sharepoint:$json.sharepoint,hubspot:$json.hubspot,outlook_draft:$json.outlook_draft,teams_notify:$json.teams_notify,verified_contact_email:$json.verified_contact_email||null,confirm_external_data_transfer:$json.confirm_external_data_transfer}) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "d07ca5bd-9af9-49c6-a9d4-5bfce6fda003",
+      "name": "Ask OrderNexa to schedule verified writes",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        680,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d=$input.first().json; return [{json:{public_id:d.public_id,jobs:d.jobs,live_writes_enabled:d.live_writes_enabled,note:'n8n only scheduled durable jobs; FastAPI/worker remain authoritative.'}}];"
+      },
+      "id": "d07ca5bd-9af9-49c6-a9d4-5bfce6fda004",
+      "name": "Return authority-safe summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        940,
+        260
+      ]
+    }
+  ],
+  "connections": {
+    "Manual operator run": {
+      "main": [
+        [
+          {
+            "node": "Explicit sync plan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Explicit sync plan": {
+      "main": [
+        [
+          {
+            "node": "Ask OrderNexa to schedule verified writes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ask OrderNexa to schedule verified writes": {
+      "main": [
+        [
+          {
+            "node": "Return authority-safe summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "description": "Requires an n8n Header Auth credential named X-OrderNexa-Operator-Key. n8n never calls SharePoint/HubSpot/Outlook/Teams directly; it asks the authoritative OrderNexa backend to create durable guarded jobs."
+  }
+}

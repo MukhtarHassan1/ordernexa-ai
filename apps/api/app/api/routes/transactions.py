@@ -109,7 +109,7 @@ async def advance(
     principal: DemoPrincipal = Depends(require_operator),
 ):
     if principal.role != "ADMIN":
-        raise HTTPException(403, "Direct state advances are restricted to local demo administrators.")
+        raise HTTPException(403, "Direct state advances are restricted to local development administrators.")
     transaction = await get_transaction_for_update(
         db,
         public_id,

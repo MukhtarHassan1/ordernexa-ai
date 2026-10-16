@@ -8,6 +8,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    Index,
     Numeric,
     String,
     Text,
@@ -1088,6 +1089,10 @@ class IntegrationCommand(Base):
         nullable=True,
     )
 
+    error_category: Mapped[str | None] = mapped_column(
+        String(50), nullable=True, index=True,
+    )
+
     verified_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
@@ -1224,3 +1229,168 @@ class Incident(Base):
         DateTime(timezone=True),
         nullable=True,
     )
+
+class BusinessOrderIdentity(Base):
+    """Atomic business-level claim for one customer PO revision.
+
+    Transaction IDs remain useful for technical idempotency, while this record
+    prevents two independent transactions from representing the same business
+    order revision and independently writing to the ERP.
+    """
+    __tablename__ = "business_order_identities"
+    __table_args__ = (
+        UniqueConstraint(
+            "customer_id", "normalized_po", "revision",
+            name="uq_business_order_customer_po_revision",
+        ),
+        Index("ix_business_order_lookup", "customer_id", "normalized_po"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    customer_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("customers.id", ondelete="RESTRICT"),
+        nullable=False, index=True,
+    )
+    transaction_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("transactions.id", ondelete="RESTRICT"),
+        nullable=False, unique=True,
+    )
+    normalized_po: Mapped[str] = mapped_column(String(120), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    content_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    amendment_of_transaction_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("transactions.id", ondelete="RESTRICT"),
+        nullable=True, index=True,
+    )
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="ACTIVE")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class IntegrationCircuit(Base):
+    """Persisted circuit-breaker state shared by worker processes."""
+    __tablename__ = "integration_circuits"
+
+    provider: Mapped[str] = mapped_column(String(60), primary_key=True)
+    state: Mapped[str] = mapped_column(String(20), nullable=False, default="CLOSED")
+    failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    half_open_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error_category: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    last_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class ExternalSubscription(Base):
+    """Durable metadata for renewable external subscriptions (Graph in V1)."""
+    __tablename__ = "external_subscriptions"
+    __table_args__ = (UniqueConstraint("provider", "subscription_id", name="uq_external_subscription_provider_id"),)
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    provider: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    subscription_id: Mapped[str] = mapped_column(String(180), nullable=False)
+    resource: Mapped[str] = mapped_column(String(500), nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="ACTIVE")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    client_state_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    delta_link: Mapped[str | None] = mapped_column(Text, nullable=True)
+    lifecycle_event: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    last_renewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_delta_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    extra_data: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class AutonomyPolicy(Base):
+    """Per-action autonomy, never an agent-wide permission."""
+    __tablename__ = "autonomy_policies"
+
+    action: Mapped[str] = mapped_column(String(100), primary_key=True)
+    level: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    policy_version: Mapped[str] = mapped_column(String(40), nullable=False, default="1.0")
+    max_value: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
+    allowed_risks: Mapped[list] = mapped_column(JSONB, nullable=False, default=lambda: ["LOW"])
+    require_verified_evidence: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+class PaymentRecord(Base):
+    """Verified sandbox payment state; never stores card or bank data."""
+    __tablename__ = "payment_records"
+    __table_args__ = (
+        UniqueConstraint("provider", "external_session_id", name="uq_payment_provider_session"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    transaction_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("transactions.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    provider: Mapped[str] = mapped_column(String(30), nullable=False, default="STRIPE_SANDBOX")
+    external_session_id: Mapped[str] = mapped_column(String(180), nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="PENDING", index=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    checkout_url_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    external_payment_intent_id: Mapped[str | None] = mapped_column(String(180), nullable=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    extra_data: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+class KnowledgeDocument(Base):
+    """Metadata-scoped unstructured knowledge source for retrieval only."""
+    __tablename__ = "knowledge_documents"
+    __table_args__ = (
+        UniqueConstraint("source_system", "source_id", name="uq_knowledge_source"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    customer_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("customers.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    source_system: Mapped[str] = mapped_column(String(50), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(250), nullable=False)
+    document_type: Mapped[str] = mapped_column(String(60), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(250), nullable=False)
+    jurisdiction: Mapped[str | None] = mapped_column(String(30), nullable=True, index=True)
+    effective_from: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    effective_to: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="ACTIVE", index=True)
+    extra_data: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class KnowledgeChunk(Base):
+    """Evidence chunk. Content is untrusted DATA and cannot authorize writes."""
+    __tablename__ = "knowledge_chunks"
+    __table_args__ = (
+        UniqueConstraint("document_id", "chunk_index", name="uq_knowledge_document_chunk"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    document_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("knowledge_documents.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    section: Mapped[str | None] = mapped_column(String(180), nullable=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    token_estimate: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

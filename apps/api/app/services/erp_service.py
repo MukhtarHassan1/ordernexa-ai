@@ -31,10 +31,24 @@ from app.schemas.transaction import (
 from app.services.transaction_service import (
     advance_transaction,
 )
+from app.services.business_order_service import transaction_business_identity
+from app.services.reliability import classify_http_exception, FailureCategory, safe_error_summary
 
 
 class ERPExecutionError(Exception):
     pass
+
+
+async def _erp_idempotency_key(session: AsyncSession, transaction: Transaction) -> str:
+    identity = await transaction_business_identity(session, transaction.id)
+    if identity is None:
+        # Legacy transactions created before the hardening migration keep their
+        # original key so an already-created Odoo order remains discoverable.
+        return f"odoo:create-sales-order:{transaction.public_id}"
+    return (
+        "odoo:create-sales-order:"
+        f"{identity.customer_id}:{identity.normalized_po}:r{identity.revision}"
+    )
 
 
 async def execute_erp_order(
@@ -56,10 +70,7 @@ async def execute_erp_order(
             "Transaction not found."
         )
 
-    idempotency_key = (
-        f"odoo:create-sales-order:"
-        f"{transaction.public_id}"
-    )
+    idempotency_key = await _erp_idempotency_key(session, transaction)
 
     existing_command = await session.scalar(
         select(IntegrationCommand)
@@ -167,6 +178,7 @@ async def execute_erp_order(
             transaction
             .customer_reference
         ),
+        "business_order_key": idempotency_key,
         "customer_code": (
             customer.code
         ),
@@ -277,6 +289,7 @@ async def execute_erp_order(
 
     timeout = httpx.Timeout(30)
 
+    post_attempted = False
     try:
         async with httpx.AsyncClient(
             timeout=timeout
@@ -299,6 +312,7 @@ async def execute_erp_order(
             if verified is not None:
                 external = {**verified, "replayed": True}
             else:
+                post_attempted = True
                 response = await client.post(
                     settings.odoo_base_url.rstrip("/") + "/ordernexa/api/sales-order",
                     headers=headers, json=request_payload,
@@ -313,40 +327,49 @@ async def execute_erp_order(
                 raise ERPExecutionError("ERP order did not pass read-after-write confirmation.")
 
     except Exception as exc:
-        # A 401/403/422 is not transient and must not enter automatic replay.
-        permanent = isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in {400, 401, 403, 409, 422}
-        command.status = "FAILED_MANUAL" if permanent else "FAILED_RETRYABLE"
-        command.last_error = type(exc).__name__
+        classified = classify_http_exception(exc, write_attempted=post_attempted)
+        command.last_error = safe_error_summary(exc)
+        command.error_category = classified.category.value
+        # If a POST may have reached Odoo, a blind retry is forbidden. The
+        # operator/recovery path must GET the exact business idempotency key first.
+        if classified.remote_state_uncertain:
+            command.status = "BLOCKED_UNCERTAIN"
+            target_status = TransactionStatus.BLOCKED_UNCERTAIN
+            event_type = "ERP_REMOTE_OUTCOME_UNCERTAIN"
+        elif classified.category in {FailureCategory.AUTHENTICATION, FailureCategory.VALIDATION}:
+            command.status = "FAILED_MANUAL"
+            target_status = TransactionStatus.FAILED_MANUAL
+            event_type = "ERP_EXECUTION_REJECTED"
+        elif classified.retryable:
+            command.status = "FAILED_RETRYABLE"
+            target_status = TransactionStatus.FAILED_RETRYABLE
+            event_type = "ERP_EXECUTION_TRANSIENT_FAILURE"
+        else:
+            command.status = "FAILED_MANUAL"
+            target_status = TransactionStatus.FAILED_MANUAL
+            event_type = "ERP_EXECUTION_FAILED"
 
         await session.commit()
 
-        if (
-            transaction.status
-            == TransactionStatus
-            .ERP_PENDING
-            .value
-        ):
+        if transaction.status == TransactionStatus.ERP_PENDING.value:
             await advance_transaction(
                 session,
                 transaction,
                 TransactionAdvance(
-                    target_status=(
-                        (TransactionStatus.FAILED_MANUAL if permanent
-                         else TransactionStatus.FAILED_RETRYABLE).value
-                    ),
-                    event_type=(
-                        "ERP_EXECUTION_FAILED"
-                    ),
+                    target_status=target_status.value,
+                    event_type=event_type,
                     payload={
-                        "error_class": type(exc).__name__,
-                        "idempotency_key": (
-                            idempotency_key
-                        ),
+                        "error_category": classified.category.value,
+                        "idempotency_key": idempotency_key,
+                        "remote_state_uncertain": classified.remote_state_uncertain,
+                        "safe_retry": classified.retryable,
                     },
                 ),
             )
 
-        raise ERPExecutionError("ERP verification or transport failed; review command status and logs.") from exc
+        raise ERPExecutionError(
+            "ERP operation was not verified. Inspect the persisted command; uncertain remote writes require reconciliation before replay."
+        ) from exc
 
     command.status = "VERIFIED"
 
@@ -364,6 +387,7 @@ async def execute_erp_order(
     )
 
     command.last_error = None
+    command.error_category = None
 
     checkpoint = Checkpoint(
         transaction_id=transaction.id,
@@ -461,12 +485,17 @@ async def retry_erp_order(session: AsyncSession, *, public_id: str) -> ERPExecut
     )
     if transaction is None:
         raise LookupError("Transaction not found.")
-    key = f"odoo:create-sales-order:{public_id}"
+    key = await _erp_idempotency_key(session, transaction)
     command = await session.scalar(
         select(IntegrationCommand).where(IntegrationCommand.idempotency_key == key)
     )
-    if not command or command.status != "FAILED_RETRYABLE" or transaction.status != TransactionStatus.FAILED_RETRYABLE.value:
-        raise ValueError("Only a matching transient/uncertain ERP failure can use this replay endpoint.")
+    allowed_command_states = {"FAILED_RETRYABLE", "BLOCKED_UNCERTAIN"}
+    allowed_transaction_states = {
+        TransactionStatus.FAILED_RETRYABLE.value,
+        TransactionStatus.BLOCKED_UNCERTAIN.value,
+    }
+    if not command or command.status not in allowed_command_states or transaction.status not in allowed_transaction_states:
+        raise ValueError("Only a matching transient or uncertain ERP failure can use this controlled reconciliation endpoint.")
     transaction = await advance_transaction(session, transaction, TransactionAdvance(
         target_status=TransactionStatus.RECOVERY_PENDING.value,
         event_type="ERP_IDEMPOTENT_REPLAY_REQUESTED", payload={"idempotency_key": key},

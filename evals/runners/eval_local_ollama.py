@@ -48,10 +48,15 @@ def score_case(data, expected: dict, *, must_flag: bool, must_review: bool) -> d
             'safety_pass':bool(safety and needs_review), 'needs_review_pass':bool(needs_review)}
 
 
-async def run(dataset: Path, output: Path, *, max_cases: int, threshold: float) -> int:
+async def run(dataset: Path, output: Path, *, max_cases: int, threshold: float, exploratory: bool = False) -> int:
     cases=[json.loads(line) for line in dataset.read_text().splitlines() if line.strip()][:max_cases]
     if not cases:
         raise ValueError('Evaluation dataset is empty.')
+    unreviewed = [x.get('id') for x in cases if x.get('requires_human_label_review') is True]
+    if unreviewed and not exploratory:
+        raise ValueError(
+            f'Dataset contains {len(unreviewed)} unreviewed generated labels. Curate them first or use --exploratory; exploratory output must not be reported as a release benchmark.'
+        )
     provider=get_ai_provider()
     stats=[];times=[]
     for entry in cases:
@@ -102,6 +107,8 @@ async def run(dataset: Path, output: Path, *, max_cases: int, threshold: float) 
     # Release-quality model accuracy must not be inflated by parser corrections.
     report={'run_at':datetime.now(UTC).isoformat(),'provider':'OLLAMA',
             'dataset':str(dataset),'cases':len(cases),'generated':sum(x['status']=='GENERATED' for x in stats),
+            'evaluation_mode':'EXPLORATORY_UNCURATED' if unreviewed else 'CURATED_OR_MANUALLY_LABELED',
+            'release_claim_eligible':not bool(unreviewed),
             'field_accuracy':round(field_accuracy,4),
             'field_accuracy_definition':'source-grounded end-to-end pipeline, NOT raw model',
             'raw_model_field_accuracy':round(raw_accuracy,4),
@@ -122,4 +129,5 @@ if __name__=='__main__':
     cli=argparse.ArgumentParser();cli.add_argument('--dataset',type=Path,required=True)
     cli.add_argument('--out',type=Path,required=True);cli.add_argument('--limit',type=int,default=32)
     cli.add_argument('--threshold',type=float,default=.97)
-    a=cli.parse_args();sys.exit(asyncio.run(run(a.dataset,a.out,max_cases=a.limit,threshold=a.threshold)))
+    cli.add_argument('--exploratory',action='store_true',help='Allow uncurated generated drafts; report is not release-claim eligible.')
+    a=cli.parse_args();sys.exit(asyncio.run(run(a.dataset,a.out,max_cases=a.limit,threshold=a.threshold,exploratory=a.exploratory)))

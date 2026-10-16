@@ -9,15 +9,14 @@ from datetime import UTC, datetime, timedelta
 import httpx
 from app.core.config import settings
 from app.integrations.graph_auth import application_token
+from app.integrations.microsoft_graph import is_public_https_callback
 
 BASE = 'https://graph.microsoft.com/v1.0'
 
 
 def safe_https(url: str) -> str:
-    from urllib.parse import urlparse
-    parsed = urlparse(url)
-    if parsed.scheme != 'https' or not parsed.netloc or parsed.username or parsed.password or parsed.fragment:
-        raise ValueError('Callback must be a verified public HTTPS address without URL credentials or fragments.')
+    if not is_public_https_callback(url):
+        raise ValueError('Callback must be a public HTTPS address without local/private destinations, URL credentials or fragments.')
     return url
 
 

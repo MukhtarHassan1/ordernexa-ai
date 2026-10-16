@@ -16,7 +16,7 @@ from app.integrations.graph_auth import application_token
 from app.integrations.microsoft_graph import MicrosoftGraph
 from app.integrations.hubspot import HubSpot
 from app.models.automation import AutomationJob
-from app.models.digital_twin import SourceArtifact
+from app.models.digital_twin import SourceArtifact, IntegrationCommand
 from app.models.transaction import Transaction, TransactionEvent
 from app.services.object_storage import object_storage
 
@@ -134,6 +134,22 @@ async def reconcile(session: AsyncSession, *, job: AutomationJob,
         job.next_attempt_at = datetime.now(UTC)
     if status == 'VERIFIED':
         job.verified_at = datetime.now(UTC)
+    command = await session.scalar(select(IntegrationCommand).where(
+        IntegrationCommand.idempotency_key == f'automation:{job.idempotency_key}'
+    ))
+    if command:
+        command.status = (
+            'VERIFIED' if status == 'VERIFIED' else
+            'ACKNOWLEDGED' if status == 'MANUALLY_ACKNOWLEDGED' else
+            'PENDING' if status == 'PENDING' else status
+        )
+        command.external_id = external_id or command.external_id
+        command.response_payload = result or command.response_payload
+        command.last_error = None if status in {'VERIFIED', 'MANUALLY_ACKNOWLEDGED'} else job.last_error
+        command.error_category = None if status in {'VERIFIED', 'MANUALLY_ACKNOWLEDGED'} else command.error_category
+        if status == 'VERIFIED':
+            command.verified_at = datetime.now(UTC)
+
     if job.transaction_id:
         tx = await session.get(Transaction, job.transaction_id)
         if tx:

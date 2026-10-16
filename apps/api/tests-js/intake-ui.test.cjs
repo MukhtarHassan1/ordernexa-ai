@@ -12,7 +12,7 @@ function makeApp({ uploadDetail, previewOk = true }) {
     if (!elements.has(id)) elements.set(id, {
       hidden: true, value:'', files:[], disabled:false, checked:false, classList:{toggle(){}},
       append(...nodes){(this.children ||= []).push(...nodes)}, replaceChildren(){this.children=[]},
-      scrollIntoView(){}, focus(){}, onclick:null, textContent:'', innerHTML:'',
+      scrollIntoView(){}, focus(){}, addEventListener(){}, onclick:null, textContent:'', innerHTML:'',
     });
     return elements.get(id);
   }

@@ -10,3 +10,6 @@ boto3==1.43.86
 python-multipart==0.0.32
 PyMuPDF==1.28.2
 openpyxl==3.1.5
+# Production OIDC/JWT verification
+PyJWT==2.15.1
+cryptography==50.0.2

@@ -6,6 +6,8 @@ silently creates an order.
 """
 import hashlib
 import re
+import io
+import zipfile
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -65,6 +67,49 @@ def _check_extension(filename: str) -> None:
         raise DocumentNeedsReview("Unsupported document type.", {"accepted_types": sorted(SUPPORTED_EXTENSIONS)})
 
 
+def _validate_content_signature(filename: str, data: bytes) -> None:
+    """Reject obvious extension/content mismatches and simple archive bombs.
+
+    This is not a malware scanner. Public deployments should add an isolated AV
+    scanning service before document parsing. The local reference build still
+    avoids trusting a user-supplied MIME type or filename extension alone.
+    """
+    ext = Path(filename).suffix.lower()
+    if ext == ".pdf" and not data.startswith(b"%PDF-"):
+        raise DocumentNeedsReview("PDF extension does not match file content.")
+    if ext == ".png" and not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise DocumentNeedsReview("PNG extension does not match file content.")
+    if ext in {".jpg", ".jpeg"} and not data.startswith(b"\xff\xd8\xff"):
+        raise DocumentNeedsReview("JPEG extension does not match file content.")
+    if ext == ".webp" and not (len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP"):
+        raise DocumentNeedsReview("WebP extension does not match file content.")
+    if ext == ".xlsx":
+        if not data.startswith(b"PK"):
+            raise DocumentNeedsReview("XLSX extension does not match an Office ZIP package.")
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                infos = archive.infolist()
+                if len(infos) > 2000:
+                    raise DocumentNeedsReview("Spreadsheet contains an excessive number of archive entries.")
+                expanded = sum(item.file_size for item in infos)
+                if expanded > max(settings.max_upload_bytes * 20, 50 * 1024 * 1024):
+                    raise DocumentNeedsReview("Spreadsheet expanded size exceeds the safe local processing limit.")
+                names = {item.filename for item in infos}
+                if "[Content_Types].xml" not in names or not any(name.startswith("xl/") for name in names):
+                    raise DocumentNeedsReview("XLSX package is missing required workbook structures.")
+        except zipfile.BadZipFile as exc:
+            raise DocumentNeedsReview("Spreadsheet is not a valid XLSX ZIP package.") from exc
+    if ext in {".txt", ".csv"}:
+        if b"\x00" in data[:4096]:
+            raise DocumentNeedsReview("Text/CSV upload contains binary null bytes.")
+        try:
+            data[:65536].decode("utf-8")
+        except UnicodeDecodeError:
+            # Native parser may support a few encodings, but an ambiguous binary
+            # payload should not be auto-processed under a text extension.
+            raise DocumentNeedsReview("Text/CSV upload is not valid UTF-8 and requires manual review.") from None
+
+
 async def _mark(session: AsyncSession, artifact: SourceArtifact, status: str, **details) -> None:
     artifact.extra_data = {**(artifact.extra_data or {}), "status": status, **details}
     await session.commit()
@@ -93,26 +138,13 @@ async def get_verified_original_bytes(artifact: SourceArtifact) -> bytes:
     return data
 
 
-async def _check_duplicate_order(session: AsyncSession, po_number: str, customer_hint: str) -> None:
-    # Fail closed on the original PO number when retrying a partly committed intake.
-    # The operator can inspect the existing transaction rather than silently create
-    # a second potentially consequential order.
-    existing = await session.scalar(
-        select(Transaction.public_id).where(
-            Transaction.customer_reference == po_number,
-            Transaction.source.in_(["FILE_UPLOAD", "FILE_UPLOAD_HUMAN_REVIEW"]),
-        ).limit(1)
-    )
-    if existing:
-        raise DuplicateDocument(existing)
-
-
 async def ingest_order_file(
     session: AsyncSession, *, filename: str, content_type: str, data: bytes,
     existing_artifact_id: UUID | None = None,
 ) -> IntakeUploadResponse:
     safe_name = _safe_filename(filename)
     _check_extension(safe_name)
+    _validate_content_signature(safe_name, data)
     if len(data) > settings.max_upload_bytes:
         raise DocumentNeedsReview("File exceeds the configured upload limit.")
     sha = hashlib.sha256(data).hexdigest()
@@ -208,7 +240,6 @@ async def ingest_order_file(
                                       if line.requested_unit_price is not None else None),
             ) for line in draft.lines],
         )
-        await _check_duplicate_order(session, manual.po_number, manual.customer_hint)
         # Track the PO before handing off to the existing deterministic validator.
         await _mark(session, original, "VALIDATING", extracted_po=manual.po_number)
         transaction_result = await create_manual_order(session, manual, source="FILE_UPLOAD")
@@ -274,7 +305,6 @@ async def confirm_human_review(
         raise ValueError("Artifact is already attached to a transaction.")
     if original.sha256 is None or not original.object_key:
         raise ValueError("Source artifact has no verifiable stored original.")
-    await _check_duplicate_order(session, data.po_number, data.customer_hint)
     result = await create_manual_order(session, data, source="FILE_UPLOAD_HUMAN_REVIEW")
     original.transaction_id = result.transaction_id
     original.extra_data = {

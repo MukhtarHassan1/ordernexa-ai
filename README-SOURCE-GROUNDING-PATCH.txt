@@ -1,23 +1,22 @@
-OrderNexa — Source Grounding & AI Safety Patch (2026-09-28)
+OrderNexa — Hybrid Source Grounding & AI Safety (updated 2026-10-09)
 
-Purpose: Correct the cause of misleading schema-valid PO extraction on the
-supplied 2026-09-28 OrderNexa source and Ollama model-routing patch.
+Purpose: make document intake fast on clear business documents, useful on messy
+ones, and fail-closed whenever critical source facts remain ambiguous.
 
-Contents:
- - New strict labelled-source parser + literal line evidence
- - Source-grounded, conflict-flagged AI extraction
- - Fail-closed intake; artifact status reports non-sensitive review reasons
- - Multi-line PO/customer/date human preview
- - Raw-vs-grounded evaluation reporting
- - 14 focused offline regression tests and a read-only diagnostic
- - Deployment/limitations runbook
+Current behavior:
+ - Deterministic native-text and table parser for PDF / XLSX / CSV / labelled text
+ - PyMuPDF native PDF table extraction for real business layouts
+ - Source-grounded Ollama fallback only when deterministic parsing is insufficient
+ - Source-backed model-copy mistakes are corrected and audited, not blindly trusted
+ - Ambiguous/conflicting/unverifiable critical source data still requires human review
+ - Image-only/scanned inputs remain review-gated when there is no independent text source
+ - Prompt-injection-like instructions in uploaded documents still trigger review
+ - Untrusted document-derived CRM domains are discarded and never used as identity authority
+ - Pricing, customer identity, inventory, credit, approvals and ERP writes remain deterministic downstream controls
 
-IMPORTANT: Source-grounded field accuracy is NOT raw LLM accuracy. If the LLM
-omits or contradicts source fields, the corrected draft is for a HUMAN to review;
-no new transaction or ERP execution is authorized by that draft.
+IMPORTANT: source grounding is not an AI-accuracy claim. A clean source can be
+processed without an LLM because explicit business facts are copied directly
+from the original. When AI is used, its output is still reconciled against the
+source and then passed through normal business validation.
 
-Start here: docs/runbooks/SOURCE-GROUNDING-SAFETY.md
-
-Apply from the EXISTING ~/projects/ordernexa-ai root after backing up its
-changed files. NO .env, Compose, secrets, migrations or model weights are
-included. All Docker volumes remain untouched.
+Start here: ORDERNEXA-20261009-INTAKE-HARDENING-START-HERE.md

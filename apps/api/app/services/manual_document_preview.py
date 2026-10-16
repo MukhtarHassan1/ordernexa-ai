@@ -20,7 +20,7 @@ def preview_purchase_order(*, filename: str, data: bytes) -> dict:
         raise PreviewNotPossible(
             "No native text is available. Scanned images require AI or human transcription."
         )
-    source = inspect_source_text(content.text)
+    source = inspect_source_text(content.text, tables=content.tables)
     if source.warnings or source.ambiguous:
         raise PreviewNotPossible(
             "Source contains ambiguous or unparseable labelled values: "

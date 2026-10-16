@@ -454,7 +454,7 @@ async def archive_and_complete(
         ),
         incident_id=None,
         message=(
-            "Local demonstration complete: verified Odoo order and "
+            "Local verification complete: verified Odoo order and "
             "MinIO archive. CRM/Microsoft/Outlook are not asserted."
         ),
     )
@@ -534,3 +534,116 @@ async def recover_downstream(
             "without recreating the ERP order."
         ),
     )
+async def recovery_plan(
+    session: AsyncSession,
+    *,
+    public_id: str,
+) -> dict:
+    """Explain a recovery before any repair write is attempted.
+
+    The plan is derived only from durable transaction/checkpoint/command state.
+    It never assumes a failed remote POST did or did not commit.
+    """
+    transaction = await session.scalar(
+        select(Transaction).where(Transaction.public_id == public_id)
+    )
+    if transaction is None:
+        raise LookupError("Transaction not found.")
+
+    commands = list((await session.execute(
+        select(IntegrationCommand)
+        .where(IntegrationCommand.transaction_id == transaction.id)
+        .order_by(IntegrationCommand.created_at)
+    )).scalars().all())
+    checkpoints = list((await session.execute(
+        select(Checkpoint)
+        .where(Checkpoint.transaction_id == transaction.id)
+        .order_by(Checkpoint.created_at)
+    )).scalars().all())
+    incidents = list((await session.execute(
+        select(Incident)
+        .where(Incident.transaction_id == transaction.id)
+        .order_by(Incident.created_at)
+    )).scalars().all())
+
+    protected: list[dict] = []
+    uncertain: list[dict] = []
+    failed: list[dict] = []
+    for command in commands:
+        item = {
+            "provider": command.provider,
+            "action": command.action,
+            "status": command.status,
+            "external_id": command.external_id,
+            "idempotency_key": command.idempotency_key,
+            "error_category": command.error_category,
+        }
+        if command.status == "VERIFIED" and command.external_id:
+            protected.append(item)
+        elif command.status == "BLOCKED_UNCERTAIN" or command.error_category == "UNCERTAIN_REMOTE_STATE":
+            uncertain.append(item)
+        elif command.status in {"FAILED_RETRYABLE", "FAILED_MANUAL", "BLOCKED_CONFIG"}:
+            failed.append(item)
+
+    erp_verified = any(
+        item["provider"] == "ODOO" and item["action"] == "CREATE_SALE_ORDER"
+        for item in protected
+    )
+    archive_verified = any(
+        item["action"] in {"ARCHIVE_CONFIRMATION", "ARCHIVE_SHAREPOINT"}
+        for item in protected
+    )
+
+    if uncertain:
+        recommendation = "RECONCILE_REMOTE_STATE_FIRST"
+        safe_to_execute = False
+        repeatable_steps: list[str] = []
+    elif transaction.status == TransactionStatus.DEGRADED.value and erp_verified and not archive_verified:
+        recommendation = "RESUME_DOWNSTREAM_ONLY"
+        safe_to_execute = True
+        repeatable_steps = ["DOCUMENT_ARCHIVE", "DOWNSTREAM_SYNC", "FINAL_VERIFICATION"]
+    elif transaction.status == TransactionStatus.BLOCKED_UNCERTAIN.value:
+        recommendation = "RECONCILE_REMOTE_STATE_FIRST"
+        safe_to_execute = False
+        repeatable_steps = []
+    else:
+        recommendation = "NO_AUTOMATIC_RECOVERY_PATH"
+        safe_to_execute = False
+        repeatable_steps = []
+
+    import hashlib
+    plan_core = {
+        "public_id": transaction.public_id,
+        "current_status": transaction.status,
+        "recommendation": recommendation,
+        "safe_to_execute": safe_to_execute,
+        "repeatable_steps": repeatable_steps,
+        "protected_committed_side_effects": protected,
+        "uncertain_remote_effects": uncertain,
+        "failed_or_blocked_commands": failed,
+        "verified_checkpoints": [
+            {"step": c.step, "status": c.status, "verified": c.verified}
+            for c in checkpoints if c.verified
+        ],
+        "open_incidents": [
+            {
+                "id": str(i.id),
+                "category": i.category,
+                "severity": i.severity,
+                "error_class": i.error_class,
+                "message": i.message,
+            }
+            for i in incidents if i.status == "OPEN"
+        ],
+        "duplicate_safety": {
+            "erp_reexecution_allowed": False if erp_verified else None,
+            "reason": (
+                "A verified ERP order is protected and must never be recreated during downstream recovery."
+                if erp_verified else
+                "No verified ERP order is recorded; ERP-specific retry must use its original idempotency key and reconciliation path."
+            ),
+        },
+    }
+    canonical = json.dumps(plan_core, sort_keys=True, separators=(",", ":"), default=str).encode()
+    plan_core["plan_sha256"] = hashlib.sha256(canonical).hexdigest()
+    return plan_core

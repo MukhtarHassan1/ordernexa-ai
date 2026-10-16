@@ -30,6 +30,7 @@ from app.services.erp_service import (
 from app.services.recovery_service import (
     archive_and_complete,
     recover_downstream,
+    recovery_plan,
 )
 
 
@@ -158,6 +159,21 @@ async def execute_downstream(
             detail=str(exc),
         ) from exc
 
+
+
+
+@router.get("/transactions/{public_id}/recovery-plan")
+async def inspect_recovery_plan(
+    public_id: str,
+    db: AsyncSession = Depends(get_db),
+    principal: DemoPrincipal = Depends(require_operator),
+):
+    if principal.role not in {"OPERATIONS_MANAGER", "ADMIN", "AUDITOR"}:
+        raise HTTPException(403, "Operations/Admin/Auditor role required.")
+    try:
+        return await recovery_plan(db, public_id=public_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
 
 @router.post(
     (

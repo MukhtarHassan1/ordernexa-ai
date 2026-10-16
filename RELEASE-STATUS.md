@@ -1,36 +1,33 @@
-# OrderNexa — 2026-09-29 source integration release status
+# OrderNexa AI — 2026-10-09 reference-release status
 
-**Evidence basis:** user-provided `OrderNexa_Full_Backup_20260929_0031.zip`, the 38-page NECTELIS master blueprint and PO-88192 sample. This source build does **not** alter or access the user's live WSL database, Windows Ollama installation, Odoo objects or external accounts.
+OrderNexa is a production-style reference implementation with evidence-gated release claims. “Implemented”, “configured”, “acknowledged” and “verified” intentionally mean different things.
 
-| Area | Code available in this source | Known verification boundary |
+| Area | Current evidence | Remaining live proof |
 |---|---|---|
-| Existing transaction, domain, approval and Odoo workflows | Typed models, stage transitions, authoritative lookup/pricing/stock/credit, role-gated approvals, Odoo idempotency and local MinIO recovery | User previously verified Stage 2 scenario and bootstrap, but this new release cannot assert current live Odoo state. |
-| Source-grounded AI document intake | Multi-format extraction, model routing, confidence anomaly detection, source evidence and human verification; source preserved | User's real Qwen 1.5B run: **raw 7/10** and **grounded 10/10** on one PO; review remained mandatory. This is NOT a population quality metric. |
-| Backend durable integration automation | New schema/migration, idempotent queue, optional worker, failure isolation and manual proof-based reconciliation | Unit/contract tested offline. New migration/worker must be exercised in the user's actual PostgreSQL/Docker environment. |
-| n8n and Microsoft Graph | Signed/shared-secret n8n ingestion, email subscription webhook/lifecycle handlers, basic Graph app-only helpers, three inactive n8n JSON workflow templates | No live Entra administrative grant, publicly reachable HTTPS Graph webhook, verified real email or live imported n8n workflow yet. No delta resync implementation. |
-| Optional downstream | Verified local completion required before SharePoint archive, HubSpot contact, unsent Outlook draft or informational Teams notification; preview-and-authorize a one-time send of an existing draft | All external writes default OFF. Real permissions, HTTPS, verified recipients, consent, live read-after-write and Outlook Sent Items still user-tested tasks. Notifications acknowledged by transport are not confirmed displayed. |
-| Frontend | Extended locally served responsive UI for transactions, human review, local approvals/recovery, durable jobs, voice review, audit and real eval reports | JavaScript static/Node tests passed. No visual/browser integration or production Next.js/SSO claim. |
-| Vapi | Restricted voice lookup and human-verified request creation; voice cannot execute changes | Vapi/Twilio wiring and caller identification require accounts, route-specific HTTPS and real calls. |
-| AI evaluation | Existing labeled synthetic evals, source-grounded/raw separation; 500 synthetic **uncurated draft** cases generated for *human label review* | 500 uncurated draft cases do not satisfy the blueprint's 500 curated scored cases; 97%/98% accuracy goals NOT measured. |
-| Security/recovery | Existing localhost-only operator keys, policy checks, durable queue, bounded retries/quarantined uncertain external writes and readback on supported actions | Operator keys are not production OAuth. Real DR backup/restore, Microsoft delta recovery and broad fault injection remain. |
+| Transaction/business core | Implemented; deterministic state/policy authority, transaction digital twin, business-order dedupe and amendment revisions; isolated suite passes | Owner environment/database acceptance is already part of the local test campaign |
+| Odoo ERP | Exactly-once command/replay/recovery design; owner-session test created an order, replayed the same external ID, and kept one verified command | Re-run only if Odoo configuration changes |
+| n8n | Five inactive workflows, JSON-valid; owner-session smoke tests completed all five with authority preserved | Re-run after n8n version/credential changes |
+| Reliability/recovery | Command journal, retries, circuit breaker, lease/fencing/heartbeat, uncertain-state quarantine, checkpoints and protected-side-effect recovery | Provider-specific failure campaigns when live accounts are available |
+| Microsoft Graph / Outlook / SharePoint | Current source contracts and webhook/subscription/lifecycle/delta logic are offline-tested; public callback and clientState guards strengthened | Real Entra tenant, mailbox/site permissions and live notification/archive/draft acceptance |
+| HubSpot | Contact/company upsert/readback contracts and uncertainty handling implemented/tested | Real private-app/sandbox token and read-after-write acceptance |
+| Teams | URL boundary, notification-only authority, uncertainty handling and ACK-vs-delivery distinction implemented/tested | Human-observed message in target channel |
+| Vapi / Twilio | API Request contracts match backend OpenAPI; status lookup is privacy-minimized and change requests are review-only; Twilio credentials stay outside FastAPI | Real Vapi assistant + Twilio number/call acceptance |
+| Stripe | Test-mode-only Checkout, idempotency, amount/currency verification and signature/replay controls are tested offline | Real Stripe test account/session/webhook acceptance |
+| OIDC/RBAC | OIDC/JWT boundary and five-role local RBAC test coverage | Real identity provider role-by-role acceptance |
+| Document intelligence | Hybrid deterministic-first + Ollama fallback; native PDF tables, XLSX and CSV grounding; ambiguous/image-only sources remain review-gated | Re-run representative customer document set when onboarding a new format family |
+| AI quality | Dataset guards, quality reporting and shadow/eval infrastructure exist | Human curate the generated 500 cases and run a measured model evaluation before publishing accuracy percentages |
+| Frontend | Required operations surfaces present; branding/interaction/accessibility polish upgraded; 11 JS tests pass | Browser/live-data visual acceptance after overlay |
 
-## Offline verification actually performed
+## Packaging-environment evidence
 
-- Python source compilation: passed.
-- Docker Compose YAML parse: passed (Docker daemon/WSL runtime not available in this build environment).
-- n8n JSON structural parse: passed; n8n UI import/credential and live webhook tests not performed.
-- Python unit/contract suite: **89 passed** with an in-memory replacement for `app.db.session` because this build sandbox lacks `asyncpg`. All external I/O was mocked; run ordinary pytest in the user's Docker API, which installs the pinned driver.
-- JavaScript Node contract suite: **8 passed**; `app.js`, `automation.js` and review JS syntax validated.
-- Generated evaluation draft: exactly **500 parseable JSONL cases**, explicitly uncurated/unscored.
-- **Not verified here:** a live Alembic migration, Docker build, Windows-native Ollama extraction after this code change, Graph/SharePoint/HubSpot/Outlook/Teams actions, Vapi calls, browser rendering, production auth and full end-to-end acceptance.
+- Python compile: **PASS**.
+- Python isolated tests: **139 passed** using an import-only `asyncpg` stub; no database results were fabricated.
+- External-provider subset: **19 provider-focused tests** in `test_external_provider_contracts.py` after callback hardening, plus existing integration/automation contract coverage in the full suite.
+- Node console tests: **11 passed**.
+- n8n templates: **5**, JSON-valid, inactive and unique node names.
+- Docker Compose YAML: parsed; `api`/worker target `runtime`, `api-tests` targets `test` and mounts repository read-only for release checks.
+- Offline release preflight: **PASS**.
+- Generated evaluation draft: **500/500 labels still require human review**, so it is not benchmark-eligible.
+- Live Microsoft/Vapi/Twilio/HubSpot/Teams/Stripe accounts were not available in the packaging sandbox and are **not** claimed verified.
 
-## Safety and completion gates
-
-1. Preserve existing `.env` and named volumes; back up database/MinIO/n8n *separately* and run the new Alembic migration without reseeding.
-2. Prove the **existing** PO-88192 (do not repeatedly reupload): verified human review → expected **GBP 13,995 / APPROVAL_REQUIRED** against actual seeded data → authorized sales/finance decisions → exactly one verified Odoo order → local archive and deliberate downstream failure/recovery.
-3. Opt in to worker with `AUTOMATION_WORKER_ENABLED=true`; leave `AUTOMATION_LIVE_WRITES=false` until the core local workflow is verified. Check job states and manual reconciliation.
-4. Import and credential *inactive* n8n templates; verify event deduplication and existing-artifact review. Add Graph subscription only after the administrator supplies permissions and a route-limited publicly reachable HTTPS callback.
-5. Opt in to individual external actions with verified identities/recipients, trace logs and remote readback. Separate Outlook draft verification from human-authorized sending; check Sent Items.
-6. Conduct actual measured, **curated** multi-document AI evaluation plus prompt-injection, unauthorized-action, duplicate and recovery tests before widening autonomy.
-
-See `docs/runbooks/ORDERNEXA_20260929_INSTALL_AND_FINISH.md` for exact commands and the human/external-account responsibilities.
+Use `ORDERNEXA-20261009-INTAKE-HARDENING-START-HERE.md` for the latest intake hardening, plus the existing reference-release documentation.

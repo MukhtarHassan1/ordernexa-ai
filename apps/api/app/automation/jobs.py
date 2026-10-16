@@ -28,14 +28,14 @@ def graph_event_id(subscription: str, message_id: str) -> str:
 
 async def publish_job(session: AsyncSession, *, key: str, kind: str,
                       payload: dict, transaction_id: UUID | None = None,
-                      requested_by: str = 'SYSTEM') -> tuple[AutomationJob, bool]:
+                      requested_by: str = 'SYSTEM', correlation_id: str | None = None) -> tuple[AutomationJob, bool]:
     if not key or len(key) > 200:
         raise ValueError('Invalid durable idempotency key.')
     request_hash = canonical_hash({'kind': kind, 'payload': payload, 'tx': str(transaction_id)})
     values = dict(kind=kind, idempotency_key=key, request_hash=request_hash,
                   transaction_id=transaction_id, status='PENDING', payload=payload,
                   result_data={}, attempt_count=0, next_attempt_at=datetime.now(UTC),
-                  requested_by=requested_by)
+                  requested_by=requested_by, correlation_id=correlation_id)
     # PostgreSQL atomic insert, prevents concurrent duplicate callbacks.
     res = await session.execute(
         insert(AutomationJob).values(**values).on_conflict_do_nothing(
@@ -58,10 +58,13 @@ def public_job(job: AutomationJob) -> dict:
     return {
         'id': str(job.id), 'transaction_id': str(job.transaction_id) if job.transaction_id else None,
         'kind': job.kind, 'status': job.status, 'attempt_count': job.attempt_count,
-        'last_error': job.last_error, 'external_id': job.external_id,
+        'correlation_id': job.correlation_id,
+        'last_error': job.last_error, 'error_category': job.error_category, 'external_id': job.external_id,
         'next_attempt_at': job.next_attempt_at.isoformat() if job.next_attempt_at else None,
+        'lease_until': job.lease_until.isoformat() if job.lease_until else None,
+        'heartbeat_at': job.heartbeat_at.isoformat() if job.heartbeat_at else None,
         'created_at': job.created_at.isoformat() if job.created_at else None,
         'verified_at': job.verified_at.isoformat() if job.verified_at else None,
         'result': {k: v for k, v in (job.result_data or {}).items() if k in
-                   {'transaction_public_id', 'artifact_id', 'remote_item_id', 'draft_id', 'message'}},
+                   {'transaction_public_id', 'artifact_id', 'remote_item_id', 'draft_id', 'message', 'company_id', 'contact_id'}},
     }

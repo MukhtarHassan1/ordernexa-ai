@@ -1,12 +1,6 @@
-"""Regression coverage for 100%-style Ollama confidence outputs.
-
-A numeric confidence of 100 is a recoverable formatting mistake; it is
-NOT evidence that extraction is reliable or safe to auto-execute.
-"""
+"""Confidence formatting is recoverable; confidence is never business authority."""
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
-from uuid import uuid4
 
 import httpx
 import pytest
@@ -16,7 +10,6 @@ from app.schemas.intake import ExtractedOrderDraft
 from app.services.ai_gateway import OllamaProvider
 from app.services.source_grounding import ground_draft_against_source
 import app.services.ai_gateway as gateway
-import app.services.intake_service as intake
 
 SAMPLE = Path('/sample-data/purchase-orders/po-88192-upload.txt')
 if not SAMPLE.exists():
@@ -43,24 +36,25 @@ def good_payload():
     }
 
 
-def test_100_is_recovered_and_quarantined_for_review():
+def test_100_is_normalized_but_never_treated_as_evidence():
     input_data = {**good_payload(), 'overall_confidence': 100}
     draft = ExtractedOrderDraft.model_validate_json(json.dumps(input_data))
     assert draft.overall_confidence == 1.0
-    assert 'REVIEW_REQUIRED_NONCANONICAL_AI_CONFIDENCE' in draft.risk_flags
-    assert input_data['overall_confidence'] == 100  # raw response was not rewritten
+    assert 'AI_CONFIDENCE_SCALE_NORMALIZED' in draft.risk_flags
+    assert input_data['overall_confidence'] == 100
 
-    corrected, report = ground_draft_against_source(draft, SAMPLE.read_text())
-    assert corrected.overall_confidence == 0.5
-    assert report['requires_human_review']
-    assert 'REVIEW_REQUIRED_NONCANONICAL_AI_CONFIDENCE' in report['review_reasons']
+    grounded, report = ground_draft_against_source(draft, SAMPLE.read_text())
+    # Independent source grounding, not the 100 value, makes this safe to continue.
+    assert not report['requires_human_review']
+    assert {'po_number', 'customer_hint', 'currency', 'delivery_location', 'lines'} <= set(report['verified_fields'])
+    assert 'AI_CONFIDENCE_SCALE_NORMALIZED' in grounded.risk_flags
 
 
 @pytest.mark.parametrize('original,expected', [(75, .75), ('75%', .75), ('100%', 1.0), ('0.9%', .009)])
-def test_percentage_formats_cannot_auto_authorize(original, expected):
+def test_percentage_formats_are_normalized_and_audited(original, expected):
     draft = ExtractedOrderDraft.model_validate({**good_payload(), 'overall_confidence': original})
     assert draft.overall_confidence == pytest.approx(expected)
-    assert 'REVIEW_REQUIRED_NONCANONICAL_AI_CONFIDENCE' in draft.risk_flags
+    assert 'AI_CONFIDENCE_SCALE_NORMALIZED' in draft.risk_flags
 
 
 @pytest.mark.parametrize('invalid', [101, -1, 10000, True, 'not a number'])
@@ -76,7 +70,7 @@ def test_valid_0_to_1_confidence_is_unchanged():
 
 
 @pytest.mark.asyncio
-async def test_real_provider_handles_100_without_claiming_certainty(monkeypatch):
+async def test_real_provider_preserves_raw_100_and_normalizes_schema(monkeypatch):
     response_payload = {**good_payload(), 'overall_confidence': 100}
     real_client = httpx.AsyncClient
     transport = httpx.MockTransport(
@@ -92,44 +86,11 @@ async def test_real_provider_handles_100_without_claiming_certainty(monkeypatch)
         user_prompt=SAMPLE.read_text(),
     )
     assert json.loads(result.raw_content)['overall_confidence'] == 100
-    assert 'REVIEW_REQUIRED_NONCANONICAL_AI_CONFIDENCE' in result.data.risk_flags
+    assert result.data.overall_confidence == 1.0
+    assert 'AI_CONFIDENCE_SCALE_NORMALIZED' in result.data.risk_flags
 
 
-@pytest.mark.asyncio
-async def test_intake_cannot_create_transaction_when_ai_claims_100(monkeypatch):
-    from app.services.ai_gateway import StructuredAIResult
-    draft = ExtractedOrderDraft.model_validate({**good_payload(), 'overall_confidence': 100})
-    source_draft, source_report = ground_draft_against_source(draft, SAMPLE.read_text())
-    result = StructuredAIResult(data=source_draft, raw_content=json.dumps(good_payload()),
-                                provider='OLLAMA', model='qwen2.5:1.5b',
-                                usage={'source_grounding': source_report})
-    session = MagicMock()
-    session.scalar = AsyncMock(return_value=None)
-    session.add = MagicMock()
-    session.commit = AsyncMock()
-    session.rollback = AsyncMock()
-    artifact = []
-
-    async def refresh(obj):
-        obj.id = uuid4()
-        artifact.append(obj)
-
-    session.refresh = AsyncMock(side_effect=refresh)
-    session.get = AsyncMock(side_effect=lambda cls, ref: artifact[0])
-    monkeypatch.setattr(intake.object_storage, 'put_bytes', AsyncMock())
-    monkeypatch.setattr(intake, 'extract_order_draft', AsyncMock(return_value=result))
-    execution = AsyncMock()
-    monkeypatch.setattr(intake, 'create_manual_order', execution)
-    with pytest.raises(intake.DocumentNeedsReview) as exc:
-        await intake.ingest_order_file(
-            session, filename=SAMPLE.name, content_type='text/plain', data=SAMPLE.read_bytes()
-        )
-    assert 'REVIEW_REQUIRED_NONCANONICAL_AI_CONFIDENCE' in exc.value.details['review_flags']
-    assert artifact[0].extra_data['status'] == 'NEEDS_REVIEW'
-    execution.assert_not_awaited()
-
-
-def test_realistic_bad_fields_plus_100_are_corrected_but_never_authorized():
+def test_bad_model_fields_are_corrected_from_source_without_trusting_confidence():
     response = {
         **good_payload(),
         'po_number': None,
@@ -142,7 +103,17 @@ def test_realistic_bad_fields_plus_100_are_corrected_but_never_authorized():
     assert grounded.po_number == 'PO-88192'
     assert grounded.customer_hint == 'Northstar Engineering Ltd'
     assert grounded.requested_delivery_date.isoformat() == '2026-09-30'
-    assert 'REVIEW_REQUIRED_NONCANONICAL_AI_CONFIDENCE' in grounded.risk_flags
-    assert set(report['corrected_fields']) == {'po_number', 'customer_hint', 'requested_delivery_date'}
+    assert 'AI_CONFIDENCE_SCALE_NORMALIZED' in grounded.risk_flags
+    assert {'po_number', 'customer_hint', 'requested_delivery_date'} <= set(report['corrected_fields'])
+    assert not report['requires_human_review']
+
+
+def test_confidence_cannot_override_unverifiable_source():
+    draft = ExtractedOrderDraft.model_validate({**good_payload(), 'overall_confidence': 100})
+    grounded, report = ground_draft_against_source(
+        draft,
+        'PURCHASE ORDER\nPlease send the usual items as soon as possible.\n',
+    )
     assert report['requires_human_review']
-    assert grounded.overall_confidence <= .5
+    assert grounded.overall_confidence <= 0.5
+    assert 'REVIEW_REQUIRED_UNVERIFIED_PO_NUMBER' in grounded.risk_flags

@@ -294,7 +294,10 @@ services:
       N8N_HOST: localhost
       N8N_PORT: 5678
       N8N_PROTOCOL: http
-      WEBHOOK_URL: ${N8N_WEBHOOK_URL}
+      N8N_LISTEN_ADDRESS: "0.0.0.0"
+      N8N_EDITOR_BASE_URL: "http://localhost:5678/"
+      N8N_WEBHOOK_URL: "http://localhost:5678/"
+      N8N_DISABLE_UI: "false"
 
       N8N_SECURE_COOKIE: "false"
 
@@ -359,6 +362,7 @@ services:
     build:
       context: ./apps/api
       dockerfile: Dockerfile
+      target: runtime
 
     container_name: ordernexa-api
     restart: unless-stopped
@@ -378,6 +382,15 @@ services:
 
     ports:
       - "127.0.0.1:8000:8000"
+
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'python -c "import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8000/api/v1/health/live\", timeout=4).read()"'
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
 
     volumes:
       - ./apps/api:/app
@@ -404,6 +417,7 @@ services:
     build:
       context: ./apps/api
       dockerfile: Dockerfile
+      target: runtime
     container_name: ordernexa-automation-worker
     restart: unless-stopped
     command: ["python", "-m", "app.automation.worker"]
@@ -419,6 +433,45 @@ services:
       - ./sample-data:/sample-data:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      - ordernexa_network
+
+
+  # ==========================================================
+  # TEST TOOLING (opt-in profile)
+  # These services never start in the normal application stack.
+  # ==========================================================
+  api-tests:
+    profiles: ["test"]
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+      target: test
+    env_file:
+      - .env
+    command: ["python", "-m", "pytest", "-q"]
+    volumes:
+      - ./apps/api:/app
+      - ./:/repo:ro
+      - ./evals:/evals:ro
+      - ./sample-data:/sample-data:ro
+    networks:
+      - ordernexa_network
+
+  console-tests:
+    profiles: ["test"]
+    image: node:22-alpine
+    working_dir: /workspace
+    command:
+      - /bin/sh
+      - -lc
+      - |
+        node --check apps/api/app/console/app.js &&
+        node --check apps/api/app/console/automation.js &&
+        node --check apps/api/app/console/intake_review.js &&
+        node --test apps/api/tests-js/*.test.cjs
+    volumes:
+      - ./:/workspace:ro
     networks:
       - ordernexa_network
 

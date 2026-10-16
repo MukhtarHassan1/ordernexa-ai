@@ -59,6 +59,13 @@ class ManualOrderInput(BaseModel):
 
     requested_delivery_date: date | None = None
 
+    # Business revision is explicit. Ordinary purchase orders are revision 1.
+    # A higher revision must reference the exact prior OrderNexa transaction.
+    order_revision: int = Field(default=1, ge=1, le=999)
+    amendment_of_public_id: str | None = Field(
+        default=None, pattern=r"^TXN-[0-9]{4}-[0-9]{6}$"
+    )
+
     lines: list[ManualOrderLineInput] = Field(
         min_length=1,
         max_length=100,

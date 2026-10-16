@@ -14,12 +14,18 @@ from app.automation.contracts import ExternalSchedule, JobKind, N8NIngress, Voic
 from app.automation.jobs import (IdempotencyConflict, canonical_hash, graph_event_id,
                                  public_job, publish_job, verify_webhook_secret)
 from app.core.config import settings
+from app.integrations.microsoft_graph import is_public_https_callback
 from app.core.security import DemoPrincipal, require_operator
 from app.db.session import get_db
 from app.models.automation import AutomationJob, VoiceChangeRequest
 from app.models.digital_twin import IntegrationCommand, Approval
 from app.models.transaction import Transaction, TransactionEvent
 from app.services.object_storage import object_storage
+from app.automation.graph_subscription import (
+    accepted_subscription, configured_subscription, delta_sync, ensure_subscription,
+    inspect_or_register_subscription, record_lifecycle_event,
+    GraphSubscriptionConfigurationError,
+)
 
 router = APIRouter(prefix='/automation', tags=['automation'])
 
@@ -37,7 +43,7 @@ def _voice_auth(provided: str | None):
 def _graph_notification_valid(obj: dict) -> bool:
     return (isinstance(obj, dict) and
             verify_webhook_secret(obj.get('clientState'), settings.graph_client_state) and
-            obj.get('subscriptionId') == settings.graph_subscription_id and
+            isinstance(obj.get('subscriptionId'), str) and
             obj.get('changeType') == 'created' and
             isinstance((obj.get('resourceData') or {}).get('id'), str) and
             0 < len(obj['resourceData']['id']) <= 350 and
@@ -54,7 +60,7 @@ async def graph_webhook(request: Request, validationToken: str | None = Query(de
             raise HTTPException(400, 'Invalid validation token.')
         return Response(content=validationToken, media_type='text/plain; charset=utf-8')
     # Basic (non-rich) notifications only. Rich/JWT notifications require a dedicated validator.
-    if not (settings.graph_client_state and settings.graph_subscription_id and settings.graph_mailbox):
+    if not (32 <= len(settings.graph_client_state) <= 128 and settings.graph_mailbox):
         raise HTTPException(503, 'Graph webhook has not been configured.')
     try:
         raw = await request.body()
@@ -70,11 +76,15 @@ async def graph_webhook(request: Request, validationToken: str | None = Query(de
     for entry in values:
         if not _graph_notification_valid(entry):
             continue
+        subscription_id = entry['subscriptionId']
+        if not await accepted_subscription(db, subscription_id):
+            continue
         message_id = entry['resourceData']['id']
-        payload = {'subscription_id': settings.graph_subscription_id,
+        payload = {'subscription_id': subscription_id,
                    'message_id': message_id, 'mailbox': settings.graph_mailbox}
-        await publish_job(db, key=graph_event_id(settings.graph_subscription_id, message_id),
-                          kind=JobKind.GRAPH_MESSAGE, payload=payload, requested_by='GRAPH_WEBHOOK')
+        await publish_job(db, key=graph_event_id(subscription_id, message_id),
+                          kind=JobKind.GRAPH_MESSAGE, payload=payload, requested_by='GRAPH_WEBHOOK',
+                          correlation_id=getattr(request.state, 'correlation_id', None))
         accepted += 1
     # Do not disclose clientState validation outcome to a remote sender.
     return Response(status_code=202, headers={'X-Queued-Count': str(accepted)})
@@ -87,7 +97,7 @@ async def graph_lifecycle(request: Request, validationToken: str | None = Query(
         if not validationToken or len(validationToken) > 2048:
             raise HTTPException(400, 'Invalid validation token.')
         return Response(content=validationToken, media_type='text/plain; charset=utf-8')
-    if not settings.graph_subscription_id or len(settings.graph_client_state) < 32:
+    if not 32 <= len(settings.graph_client_state) <= 128:
         raise HTTPException(503, 'Graph lifecycle callback not configured.')
     try:
         import json
@@ -101,22 +111,71 @@ async def graph_lifecycle(request: Request, validationToken: str | None = Query(
         raise HTTPException(400, 'Invalid lifecycle payload.') from None
     accepted = 0
     for item in values:
-        if not isinstance(item, dict) or not verify_webhook_secret(item.get('clientState'), settings.graph_client_state) or item.get('subscriptionId') != settings.graph_subscription_id:
+        if not isinstance(item, dict) or not verify_webhook_secret(item.get('clientState'), settings.graph_client_state):
+            continue
+        subscription_id = item.get('subscriptionId')
+        if not isinstance(subscription_id, str) or not await accepted_subscription(db, subscription_id):
             continue
         event = item.get('lifecycleEvent')
         if event not in {'missed', 'subscriptionRemoved', 'reauthorizationRequired'}:
             continue
-        fingerprint = canonical_hash({'subscription': settings.graph_subscription_id,
+        fingerprint = canonical_hash({'subscription': subscription_id,
                                       'event': event, 'expiration': item.get('subscriptionExpirationDateTime')})
+        await record_lifecycle_event(db, subscription_id=subscription_id, event=event)
         await publish_job(db, key=f'graph-lifecycle:{fingerprint}', kind=JobKind.GRAPH_LIFECYCLE,
-                          payload={'event': event, 'subscription': settings.graph_subscription_id},
-                          requested_by='GRAPH_LIFECYCLE')
+                          payload={'event': event, 'subscription': subscription_id},
+                          requested_by='GRAPH_LIFECYCLE', correlation_id=getattr(request.state, 'correlation_id', None))
         accepted += 1
     return Response(status_code=202, headers={'X-Queued-Count': str(accepted)})
 
 
+@router.get('/graph/subscription')
+async def graph_subscription_status(
+    db: AsyncSession = Depends(get_db),
+    principal: DemoPrincipal = Depends(require_operator),
+):
+    _need_role(principal, 'OPERATIONS_MANAGER', 'ADMIN', 'AUDITOR')
+    row = await configured_subscription(db)
+    if row is None:
+        return {'configured': False, 'message': 'No durable Graph subscription record exists yet.'}
+    return {
+        'configured': True, 'subscription_id': row.subscription_id,
+        'resource': row.resource, 'status': row.status,
+        'expires_at': row.expires_at.isoformat(),
+        'last_renewed_at': row.last_renewed_at.isoformat() if row.last_renewed_at else None,
+        'last_delta_sync_at': row.last_delta_sync_at.isoformat() if row.last_delta_sync_at else None,
+        'lifecycle_event': row.lifecycle_event,
+        'delta_initialized': bool(row.delta_link),
+    }
+
+
+@router.post('/graph/subscription/ensure')
+async def graph_subscription_ensure(
+    allow_create: bool = Query(default=False),
+    db: AsyncSession = Depends(get_db),
+    principal: DemoPrincipal = Depends(require_operator),
+):
+    _need_role(principal, 'OPERATIONS_MANAGER', 'ADMIN')
+    try:
+        return await ensure_subscription(db, allow_create=allow_create)
+    except GraphSubscriptionConfigurationError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.post('/graph/delta-sync')
+async def graph_delta_recovery(
+    db: AsyncSession = Depends(get_db),
+    principal: DemoPrincipal = Depends(require_operator),
+):
+    _need_role(principal, 'OPERATIONS_MANAGER', 'ADMIN')
+    try:
+        return await delta_sync(db, reason='OPERATOR')
+    except GraphSubscriptionConfigurationError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
 @router.post('/n8n/intake', status_code=202)
-async def n8n_ingress(data: N8NIngress,
+async def n8n_ingress(request: Request, data: N8NIngress,
                       x_ordernexa_ingest_secret: str | None = Header(default=None),
                       db: AsyncSession = Depends(get_db)):
     if not verify_webhook_secret(x_ordernexa_ingest_secret, settings.n8n_ingest_secret):
@@ -147,7 +206,8 @@ async def n8n_ingress(data: N8NIngress,
         payload = prior.payload
     try:
         job, created = await publish_job(db, key=key, kind=JobKind.N8N_DOCUMENT,
-                                          payload=payload, requested_by='N8N_INGRESS')
+                                          payload=payload, requested_by='N8N_INGRESS',
+                                          correlation_id=getattr(request.state, 'correlation_id', None))
     except IdempotencyConflict as exc:
         raise HTTPException(409, str(exc)) from exc
     return {'job_id': str(job.id), 'status': job.status, 'created': created,
@@ -155,7 +215,7 @@ async def n8n_ingress(data: N8NIngress,
 
 
 @router.post('/transactions/{public_id}/schedule', status_code=202)
-async def schedule_verified_transaction(public_id: str, data: ExternalSchedule,
+async def schedule_verified_transaction(request: Request, public_id: str, data: ExternalSchedule,
                                          db: AsyncSession = Depends(get_db),
                                          principal: DemoPrincipal = Depends(require_operator)):
     _need_role(principal, 'OPERATIONS_MANAGER', 'ADMIN')
@@ -182,7 +242,7 @@ async def schedule_verified_transaction(public_id: str, data: ExternalSchedule,
                    'verified_contact_email': data.verified_contact_email or ''}
         job, created = await publish_job(db, key=f'external:{tx.public_id}:{kind}:v1',
                                           kind=kind, payload=payload, transaction_id=tx.id,
-                                          requested_by=principal.actor_id)
+                                          requested_by=principal.actor_id, correlation_id=getattr(request.state, 'correlation_id', None))
         result.append({'kind': kind, 'job_id': str(job.id), 'created': created, 'status': job.status})
     return {'public_id': public_id, 'jobs': result,
             'live_writes_enabled': settings.automation_live_writes,
@@ -190,7 +250,7 @@ async def schedule_verified_transaction(public_id: str, data: ExternalSchedule,
 
 
 @router.post('/transactions/{public_id}/notify-approvals', status_code=202)
-async def schedule_teams_approval(public_id: str,
+async def schedule_teams_approval(request: Request, public_id: str,
                                    db: AsyncSession = Depends(get_db),
                                    principal: DemoPrincipal = Depends(require_operator)):
     _need_role(principal, 'OPERATIONS_MANAGER', 'ADMIN')
@@ -204,7 +264,8 @@ async def schedule_teams_approval(public_id: str,
     job, created = await publish_job(db, key=f'approval-notify:{tx.public_id}:v1',
         kind=JobKind.TEAMS_APPROVAL_NOTIFY,
         payload={'transaction_public_id': public_id, 'approval_count': len(pending)},
-        transaction_id=tx.id, requested_by=principal.actor_id)
+        transaction_id=tx.id, requested_by=principal.actor_id,
+        correlation_id=getattr(request.state, 'correlation_id', None))
     return {'job_id': str(job.id), 'status': job.status, 'created': created,
             'message': 'Teams notification only. A real operator must approve in the protected web console.'}
 
@@ -284,17 +345,44 @@ async def send_approved_outlook_draft(job_id: UUID, data: dict = Body(...),
 
 
 @router.get('/configuration')
-async def configuration(principal: DemoPrincipal = Depends(require_operator)):
-    # Reflect configured vs missing, never reveal secret values.
-    return {'worker_enabled': settings.automation_worker_enabled,
-            'external_writes_enabled': settings.automation_live_writes,
-            'customer_email_enabled': settings.customer_email_enabled,
-            'graph_configured': bool(settings.graph_client_state and settings.graph_subscription_id and settings.graph_mailbox and settings.graph_client_id and settings.graph_client_secret),
-            'sharepoint_configured': bool(settings.graph_drive_id),
-            'hubspot_configured': bool(settings.hubspot_access_token),
-            'teams_configured': bool(settings.teams_approval_webhook_url),
-            'n8n_configured': len(settings.n8n_ingest_secret) >= 32,
-            'voice_configured': len(settings.voice_server_secret) >= 32}
+async def configuration(
+    db: AsyncSession = Depends(get_db),
+    principal: DemoPrincipal = Depends(require_operator),
+):
+    # Reflect configured vs missing, never reveal secret values. A durable Graph
+    # subscription is authoritative; GRAPH_SUBSCRIPTION_ID remains a backwards
+    # compatible bootstrap hint rather than a completion signal.
+    subscription = await configured_subscription(db)
+    oidc_ready = bool(
+        settings.oidc_issuer.strip() and settings.oidc_audience.strip()
+        and settings.oidc_jwks_url.strip().startswith('https://')
+    )
+    return {
+        'worker_enabled': settings.automation_worker_enabled,
+        'external_writes_enabled': settings.automation_live_writes,
+        'customer_email_enabled': settings.customer_email_enabled,
+        'auth_mode': settings.auth_mode,
+        'production_oidc_configured': oidc_ready,
+        'graph_credentials_configured': bool(
+            settings.graph_client_state and settings.graph_mailbox
+            and settings.graph_client_id and settings.graph_client_secret
+            and settings.graph_tenant_id
+        ),
+        'graph_callback_urls_configured': bool(
+            is_public_https_callback(settings.graph_notification_url)
+            and is_public_https_callback(settings.graph_lifecycle_url)
+        ),
+        'graph_subscription_registered': bool(subscription),
+        'graph_subscription_status': subscription.status if subscription else None,
+        'graph_subscription_expires_at': subscription.expires_at.isoformat() if subscription else None,
+        'sharepoint_configured': bool(settings.graph_drive_id),
+        'hubspot_configured': bool(settings.hubspot_access_token),
+        'teams_configured': bool(settings.teams_approval_webhook_url),
+        'n8n_configured': len(settings.n8n_ingest_secret) >= 32,
+        'voice_configured': len(settings.voice_server_secret) >= 32,
+        'stripe_sandbox_configured': bool(settings.stripe_enabled and settings.stripe_secret_key and settings.stripe_webhook_secret),
+        'notice': 'Configured does not mean live-verified. Integration Health records only observed/runtime evidence.',
+    }
 
 
 @router.get('/audit/{public_id}')

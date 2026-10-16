@@ -1,0 +1,52 @@
+{
+  "version": "2026-10-04",
+  "notice": "Reference API Request contracts only. Credentials and live Vapi/Twilio delivery are deployment concerns; this file contains no secret values.",
+  "tools": [
+    {
+      "name": "ordernexa_status_lookup",
+      "method": "GET",
+      "path_template": "/api/v1/automation/voice/status/{transaction_public_id}",
+      "headers": {
+        "X-OrderNexa-Voice-Secret": "<configure-in-vapi-secret-store>"
+      },
+      "input": {
+        "transaction_public_id": "TXN-YYYY-NNNNNN"
+      },
+      "allowed_output": [
+        "found",
+        "safe_status",
+        "notice"
+      ],
+      "security_rule": "This endpoint intentionally never returns customer identity, prices, delivery details, payment data, or write authority. Caller identity must be verified outside this endpoint before disclosing sensitive order information."
+    },
+    {
+      "name": "ordernexa_change_request",
+      "method": "POST",
+      "path": "/api/v1/automation/voice/change-request",
+      "headers": {
+        "Content-Type": "application/json",
+        "X-OrderNexa-Voice-Secret": "<configure-in-vapi-secret-store>"
+      },
+      "body_schema": {
+        "transaction_public_id": "TXN-YYYY-NNNNNN",
+        "event_id": "provider-unique-event-id",
+        "call_id": "provider-call-id",
+        "request_type": "CALLBACK|DELIVERY_CHANGE|QUANTITY_CHANGE|GENERAL_QUERY",
+        "request_note": "Short caller request; never include card/bank credentials."
+      },
+      "result_semantics": "Creates a PENDING_VERIFICATION review request only. It never modifies Odoo or approves a business change."
+    }
+  ],
+  "forbidden_voice_actions": [
+    "direct ERP modification",
+    "price override",
+    "credit override",
+    "approval grant",
+    "bank/payment destination change",
+    "refund execution",
+    "payment credential collection"
+  ],
+  "vapi_tool_type": "apiRequest",
+  "credential_strategy": "Use a reusable Vapi Custom Credential for X-OrderNexa-Voice-Secret. Never embed the secret in prompts, tool descriptions, exported JSON, screenshots or source control.",
+  "public_https_required": true
+}

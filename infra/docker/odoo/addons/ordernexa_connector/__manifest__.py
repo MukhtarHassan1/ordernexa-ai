@@ -1,7 +1,7 @@
 {
     "name": "OrderNexa Connector",
     "version": "19.0.1.0.0",
-    "author": "NECTELIS",
+    "author": "OrderNexa",
     "summary": (
         "Controlled integration adapter "
         "for OrderNexa AI"

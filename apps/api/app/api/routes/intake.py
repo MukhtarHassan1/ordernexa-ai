@@ -1,4 +1,4 @@
-"""Local demo intake: original artifacts survive inference failures.
+"""Local document intake: original artifacts survive inference failures.
 
 These local API endpoints require an operator key. Production multi-channel
 connectors need their own independently authenticated webhook ingress.
@@ -151,7 +151,7 @@ async def download_saved_original(
 ):
     """Authorized download to compare a saved document with its review fields.
 
-    Never serve user-uploaded files inline. The local demo key is not suitable
+    Never serve user-uploaded files inline. The local development key is not suitable
     for deployment outside localhost; production must use proper authentication.
     """
     if principal.role not in {"SALES_MANAGER", "OPERATIONS_MANAGER", "ADMIN"}:

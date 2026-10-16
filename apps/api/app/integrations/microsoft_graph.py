@@ -9,13 +9,35 @@ from html.parser import HTMLParser
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote
+from datetime import datetime
+from urllib.parse import quote, urlparse
+import ipaddress
 
 import httpx
 
 
 class GraphIntegrationError(RuntimeError):
     pass
+
+
+def is_public_https_callback(url: str) -> bool:
+    """Syntactic safety gate for Graph callbacks before Microsoft performs live validation.
+
+    This deliberately does not resolve DNS. It rejects credentials/fragments,
+    localhost names and non-global literal IP addresses, all of which cannot be
+    valid public Microsoft Graph webhook destinations.
+    """
+    parsed = urlparse(url or "")
+    host = (parsed.hostname or "").strip().lower()
+    if parsed.scheme != "https" or not host or parsed.username or parsed.password or parsed.fragment:
+        return False
+    if host == "localhost" or host.endswith(".localhost") or "." not in host:
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return True
+    return ip.is_global
 
 
 @dataclass(frozen=True)
@@ -68,8 +90,9 @@ class MicrosoftGraph:
         client = self._client or httpx.AsyncClient(timeout=25)
         close_after = self._client is None
         try:
+            url = path if path.startswith("https://") else self.base_url + path
             res = await client.request(
-                method, self.base_url + path,
+                method, url,
                 headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
                 **kwargs,
             )
@@ -98,7 +121,7 @@ class MicrosoftGraph:
             if not encoded:
                 continue
             if len(encoded) > 25 * 1024 * 1024:
-                raise GraphIntegrationError("Incoming Graph attachment exceeds safe demo size.")
+                raise GraphIntegrationError("Incoming Graph attachment exceeds the configured safe document size.")
             try:
                 data = base64.b64decode(encoded, validate=True)
             except (ValueError, TypeError) as exc:
@@ -160,17 +183,28 @@ class MicrosoftGraph:
             raise
 
     async def archive_content(self, *, drive_id: str, path: str) -> bytes:
-        """Byte-level read-after-write. Never infer success from metadata alone."""
+        """Byte-level read-after-write using the same injectable transport as metadata calls."""
         if not path or path.startswith('/') or '..' in path.split('/'):
             raise ValueError('Invalid archive path.')
         token = await self.token_provider()
         safe_path = '/'.join(quote(segment, safe='') for segment in path.split('/'))
-        async with httpx.AsyncClient(timeout=40, follow_redirects=True) as client:
-            res = await client.get(self.base_url +
-                f'/drives/{quote(drive_id, safe="")}/root:/{safe_path}:/content',
-                headers={'Authorization': f'Bearer {token}'})
+        client = self._client or httpx.AsyncClient(timeout=40, follow_redirects=True)
+        close_after = self._client is None
+        try:
+            res = await client.get(
+                self.base_url + f'/drives/{quote(drive_id, safe="")}/root:/{safe_path}:/content',
+                headers={'Authorization': f'Bearer {token}'},
+                follow_redirects=True,
+            )
             res.raise_for_status()
             return res.content
+        except httpx.HTTPStatusError as exc:
+            raise GraphIntegrationError(f"Microsoft Graph returned HTTP {exc.response.status_code}.") from exc
+        except httpx.RequestError as exc:
+            raise GraphIntegrationError("Microsoft Graph transport unavailable.") from exc
+        finally:
+            if close_after:
+                await client.aclose()
 
     async def create_confirmation_draft(self, *, sender_id: str, recipient: str,
                                         subject: str, plain_text: str) -> dict:
@@ -191,3 +225,75 @@ class MicrosoftGraph:
         if not sender_id or not draft_id:
             raise ValueError('Mailbox and existing draft ID are required.')
         await self._request('POST', f'/users/{quote(sender_id, safe="")}/messages/{quote(draft_id, safe="")}/send')
+
+
+    async def get_subscription(self, subscription_id: str) -> dict:
+        if not subscription_id:
+            raise ValueError("Subscription ID is required.")
+        return await self._request("GET", f"/subscriptions/{quote(subscription_id, safe='')}")
+
+    async def create_subscription(
+        self, *, resource: str, notification_url: str, lifecycle_url: str,
+        expiration: datetime, client_state: str,
+    ) -> dict:
+        if not resource.startswith("/users/"):
+            raise ValueError("V1 Graph subscription resource must be a scoped /users/... resource.")
+        if not is_public_https_callback(notification_url) or not is_public_https_callback(lifecycle_url):
+            raise ValueError("Graph callback URLs must be public HTTPS endpoints without local/private destinations.")
+        if len(client_state) < 32 or len(client_state) > 128:
+            raise ValueError("Graph clientState must be a high-entropy secret between 32 and 128 characters.")
+        return await self._request("POST", "/subscriptions", json={
+            "changeType": "created",
+            "notificationUrl": notification_url,
+            "lifecycleNotificationUrl": lifecycle_url,
+            "resource": resource,
+            "expirationDateTime": expiration.isoformat().replace("+00:00", "Z"),
+            "clientState": client_state,
+            "latestSupportedTlsVersion": "v1_2",
+        })
+
+    async def renew_subscription(self, *, subscription_id: str, expiration: datetime) -> dict:
+        if not subscription_id:
+            raise ValueError("Subscription ID is required.")
+        return await self._request(
+            "PATCH", f"/subscriptions/{quote(subscription_id, safe='')}",
+            json={"expirationDateTime": expiration.isoformat().replace("+00:00", "Z")},
+        )
+
+    async def delete_subscription(self, subscription_id: str) -> None:
+        await self._request("DELETE", f"/subscriptions/{quote(subscription_id, safe='')}")
+
+    async def message_delta(
+        self, *, mailbox: str, delta_link: str | None = None, max_pages: int = 10,
+    ) -> tuple[list[dict], str | None]:
+        """Return changed Inbox messages and the latest durable delta link.
+
+        The caller persists the delta link only after every page was accepted into
+        the durable OrderNexa queue. Deletions are returned but ignored by intake.
+        """
+        if max_pages < 1 or max_pages > 100:
+            raise ValueError("max_pages must be between 1 and 100.")
+        if delta_link:
+            path = delta_link
+        else:
+            path = (
+                f"/users/{quote(mailbox, safe='')}/mailFolders/inbox/messages/delta"
+                "?$select=id,internetMessageId,subject,from,hasAttachments,receivedDateTime&$top=50"
+            )
+        changes: list[dict] = []
+        latest_delta: str | None = None
+        for _ in range(max_pages):
+            page = await self._request("GET", path)
+            values = page.get("value") or []
+            if not isinstance(values, list):
+                raise GraphIntegrationError("Graph delta response has invalid value payload.")
+            changes.extend(item for item in values if isinstance(item, dict))
+            next_link = page.get("@odata.nextLink")
+            delta = page.get("@odata.deltaLink")
+            if delta:
+                latest_delta = str(delta)
+            if next_link:
+                path = str(next_link)
+                continue
+            return changes, latest_delta
+        raise GraphIntegrationError("Graph delta pagination exceeded configured safety limit; delta link not advanced.")

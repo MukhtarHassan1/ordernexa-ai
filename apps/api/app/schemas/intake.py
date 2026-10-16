@@ -38,12 +38,12 @@ class ExtractedOrderDraft(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def quarantine_noncanonical_ai_confidence(cls, value):
-        """Recover a common small-model *format* error, never trust its certainty.
+        """Recover a common small-model confidence-scale formatting error.
 
-        The AI contract requires 0..1, but local LLMs occasionally emit 100
-        for 100%. We can still use other schema-valid fields for source
-        verification, provided the malformed confidence triggers human review.
-        Other invalid values remain validation failures (fail closed).
+        The AI contract requires 0..1, but local models sometimes emit a
+        percentage. Normalize the representation and record an audit flag;
+        source grounding and deterministic validation—not model confidence—
+        decide whether the document can proceed. Invalid values still fail closed.
         """
         if not isinstance(value, dict):
             return value
@@ -70,7 +70,7 @@ class ExtractedOrderDraft(BaseModel):
             fixed["overall_confidence"] = number / 100
             fixed["risk_flags"] = list(dict.fromkeys([
                 *flags,
-                "REVIEW_REQUIRED_NONCANONICAL_AI_CONFIDENCE",
+                "AI_CONFIDENCE_SCALE_NORMALIZED",
             ]))
             return fixed
         return value

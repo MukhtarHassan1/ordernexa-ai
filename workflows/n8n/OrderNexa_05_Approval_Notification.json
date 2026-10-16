@@ -1,0 +1,115 @@
+{
+  "name": "OrderNexa \u2014 Approval Notification Scheduler (INACTIVE)",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "8b650585-6502-4465-9101-f5ad5c5da001",
+      "name": "Manual approval-notify run",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        170,
+        250
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "p1",
+              "name": "transaction_public_id",
+              "type": "string",
+              "value": "TXN-2026-000036"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "8b650585-6502-4465-9101-f5ad5c5da002",
+      "name": "Choose approval-required transaction",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        420,
+        250
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://api:8000/api/v1/automation/transactions/{{$json.transaction_public_id}}/notify-approvals",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": false,
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "8b650585-6502-4465-9101-f5ad5c5da003",
+      "name": "Queue Teams approval context via OrderNexa",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        700,
+        250
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d=$input.first().json; return [{json:{job_id:d.job_id,status:d.status,created:d.created,note:'Notification only. Approval authority remains in protected OrderNexa UI.'}}];"
+      },
+      "id": "8b650585-6502-4465-9101-f5ad5c5da004",
+      "name": "Confirm notification job only",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        250
+      ]
+    }
+  ],
+  "connections": {
+    "Manual approval-notify run": {
+      "main": [
+        [
+          {
+            "node": "Choose approval-required transaction",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Choose approval-required transaction": {
+      "main": [
+        [
+          {
+            "node": "Queue Teams approval context via OrderNexa",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Queue Teams approval context via OrderNexa": {
+      "main": [
+        [
+          {
+            "node": "Confirm notification job only",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "description": "Requires X-OrderNexa-Operator-Key Header Auth. Teams is context/notification only; approve/reject remains server-authorized in OrderNexa."
+  }
+}

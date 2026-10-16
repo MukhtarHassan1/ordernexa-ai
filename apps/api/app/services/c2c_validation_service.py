@@ -38,6 +38,10 @@ from app.schemas.transaction import (
     TransactionAdvance,
     TransactionCreate,
 )
+from app.services.business_order_service import (
+    BusinessOrderConflict,
+    claim_business_order,
+)
 from app.services.transaction_service import (
     advance_transaction,
     create_transaction,
@@ -646,6 +650,46 @@ async def create_manual_order(
 
     await session.flush()
 
+    # Claim the *business order*, not merely this technical transaction.
+    # This closes the cross-transaction duplicate gap while preserving an
+    # explicit amendment/revision path.
+    try:
+        business_identity = await claim_business_order(
+            session, transaction=transaction, customer=customer, data=data
+        )
+    except BusinessOrderConflict as exc:
+        transaction = await transition(
+            session,
+            transaction,
+            TransactionStatus.DUPLICATE_REVIEW,
+            "BUSINESS_ORDER_DUPLICATE_BLOCKED",
+            {
+                "normalized_po": exc.normalized_po,
+                "candidates": [item.as_dict() for item in exc.candidates],
+                "erp_write_allowed": False,
+            },
+        )
+        raise ResolutionNeedsReview(
+            "This customer PO revision already exists. Review/link the existing order or submit an explicit amendment.",
+            resolution_type="DUPLICATE_ORDER",
+            candidates=[item.as_dict() for item in exc.candidates],
+            public_id=transaction.public_id,
+        ) from exc
+    except ValueError as exc:
+        transaction = await transition(
+            session,
+            transaction,
+            TransactionStatus.WAITING_CUSTOMER,
+            "AMENDMENT_VALIDATION_REQUIRED",
+            {"message": str(exc), "erp_write_allowed": False},
+        )
+        raise ResolutionNeedsReview(
+            str(exc),
+            resolution_type="AMENDMENT_VALIDATION",
+            candidates=[],
+            public_id=transaction.public_id,
+        ) from exc
+
     transaction = await transition(
         session,
         transaction,
@@ -654,10 +698,14 @@ async def create_manual_order(
         {
             "customer_code": customer.code,
             "customer_name": customer.name,
-            "confidence": str(
-                customer_confidence
-            ),
+            "confidence": str(customer_confidence),
             "method": customer_method,
+            "business_order": {
+                "normalized_po": business_identity.normalized_po,
+                "revision": business_identity.revision,
+                "content_fingerprint": business_identity.content_fingerprint,
+                "amendment": business_identity.revision > 1,
+            },
         },
     )
 

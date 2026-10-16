@@ -21,6 +21,7 @@ class AutomationJob(Base):
     # Separate source-scoped delivery key. No duplicates even after process restarts.
     idempotency_key: Mapped[str] = mapped_column(String(200), unique=True, nullable=False)
     request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    correlation_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(35), nullable=False, default="PENDING", index=True)
     # Metadata and verified destinations only: never persist API tokens or raw message content here.
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
@@ -28,6 +29,9 @@ class AutomationJob(Base):
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))
     lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lease_token: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_category: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
     last_error: Mapped[str | None] = mapped_column(Text)
     external_id: Mapped[str | None] = mapped_column(String(250))
     requested_by: Mapped[str] = mapped_column(String(120), nullable=False, default="SYSTEM")

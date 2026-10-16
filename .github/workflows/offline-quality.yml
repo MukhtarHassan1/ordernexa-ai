@@ -1,7 +1,8 @@
-name: OrderNexa offline quality
+name: OrderNexa quality gates
 on:
   push:
   pull_request:
+
 jobs:
   offline-contracts:
     runs-on: ubuntu-latest
@@ -17,35 +18,81 @@ jobs:
       MINIO_ROOT_PASSWORD: ci-fake
     steps:
       - uses: actions/checkout@v4
+
+      - name: Reject committed secret files
+        working-directory: .
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git ls-files | grep -E '(^|/)\.env($|\.)' | grep -vE '(^|/)\.env\.example$'; then
+            echo 'ERROR: private .env file is tracked'
+            exit 1
+          fi
+          if git ls-files | grep -Ei '(credentials.*\.json|service-account.*\.json|\.p12$|\.pfx$|\.pem$|\.key$)'; then
+            echo 'ERROR: credential/certificate-like file is tracked'
+            exit 1
+          fi
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: pip
           cache-dependency-path: apps/api/requirements-dev.txt
-      - name: Install offline test dependencies
+
+      - name: Install test dependencies
         run: python -m pip install -r requirements-dev.txt
+
+      - name: Dependency consistency
+        run: python -m pip check
+
       - name: Python compile
         run: python -m compileall -q app tests ../../infra/docker/odoo/addons/ordernexa_connector
+
       - name: Run offline tests (external I/O mocked)
         run: python -m pytest -q tests
+
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: JavaScript syntax and offline console contract tests
+
+      - name: JavaScript syntax and console contract tests
         run: |
           node --check app/console/app.js
           node --check app/console/automation.js
           node --check app/console/intake_review.js
           node --test tests-js/*.test.cjs
-      - name: Validate inactive n8n template JSON and draft dataset size
+
+      - name: Validate inactive n8n templates
         run: |
-          python - <<'PY2'
+          python - <<'PY'
           import json
           from pathlib import Path
           for path in Path('../../workflows/n8n').glob('*.json'):
               obj=json.loads(path.read_text())
               assert obj['active'] is False and obj['nodes'] and obj['connections'], path
-          cases = Path('../../evals/datasets/generated_draft_500_REQUIRES_REVIEW.jsonl')
-          if cases.exists():
-              assert sum(bool(line.strip()) for line in cases.open()) == 500
-          PY2
+              names=[n.get('name') for n in obj['nodes']]
+              assert len(names)==len(set(names)), path
+          PY
+
+      - name: Validate evaluation datasets without inflating claims
+        run: |
+          python ../../evals/runners/validate_dataset.py ../../evals/datasets/generated_draft_500_REQUIRES_REVIEW.jsonl --json-out /tmp/generated-validation.json
+          python - <<'PY'
+          import json
+          r=json.load(open('/tmp/generated-validation.json'))
+          assert r['case_count'] == 500
+          assert r['release_claim_eligible'] is False
+          PY
+
+      - name: Ensure sanitized source has no accidental bytecode/caches
+        working-directory: .
+        run: |
+          test -z "$(git ls-files | grep -E '(__pycache__/|\.pyc$|\.pytest_cache/)')"
+
+      - name: Docker runtime build
+        working-directory: .
+        run: docker build --pull=false --target runtime -t ordernexa-api-ci apps/api
+
+      - name: Docker test image build
+        working-directory: .
+        run: docker build --pull=false --target test -t ordernexa-api-test-ci apps/api

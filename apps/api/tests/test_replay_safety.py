@@ -36,7 +36,7 @@ async def test_uncertain_erp_response_verifies_original_before_any_post(monkeypa
     customer=SimpleNamespace(id=uuid4(),code='CUST-1001',name='Synthetic Customer')
     line=SimpleNamespace(line_number=1,quantity=Decimal('2'),executable_unit_price=Decimal('17.00'))
     product=SimpleNamespace(sku='XTR-420')
-    payload={'transaction_id':pub,'idempotency_key':key,'po_number':'TEST-PO',
+    payload={'transaction_id':pub,'idempotency_key':key,'po_number':'TEST-PO','business_order_key':key,
              'customer_code':customer.code,'customer_name':customer.name,'currency':'GBP',
              'lines':[{'line_number':1,'sku':'XTR-420','quantity':'2','unit_price':'17.00'}]}
     cmd=SimpleNamespace(status='FAILED_RETRYABLE',attempt_count=1,request_payload=payload,
@@ -56,6 +56,7 @@ async def test_uncertain_erp_response_verifies_original_before_any_post(monkeypa
     original=httpx.AsyncClient
     monkeypatch.setattr(erp.httpx,'AsyncClient',lambda **kw: original(transport=httpx.MockTransport(handler),**kw))
     monkeypatch.setattr(erp.settings,'ordernexa_odoo_shared_secret','synthetic-credential-only')
+    monkeypatch.setattr(erp,'transaction_business_identity',AsyncMock(return_value=None))
     async def adv(session,transaction,request):
         transaction.status=request.target_status
         return transaction
@@ -82,6 +83,7 @@ async def test_changed_payload_blocks_replay(monkeypatch):
     product=SimpleNamespace(sku='XTR-420')
     rows=MagicMock();rows.all.return_value=[(line,product)]
     session.execute.return_value=rows
+    monkeypatch.setattr(erp,'transaction_business_identity',AsyncMock(return_value=None))
     with pytest.raises(ValueError,match='payload changed'):
         await erp.execute_erp_order(session,public_id=pub)
     assert not session.commit.await_count

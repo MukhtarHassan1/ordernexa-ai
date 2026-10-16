@@ -19,11 +19,11 @@
     };
   }
   const descriptions = Object.freeze({
-    REVIEW_REQUIRED_NONCANONICAL_AI_CONFIDENCE: 'AI reported a nonstandard confidence value. Confidence alone is not evidence.',
+    AI_CONFIDENCE_SCALE_NORMALIZED: 'AI confidence used a percentage scale and was normalized; source verification remains authoritative.',
     REVIEW_REQUIRED_SOURCE_CONFLICT_PO_NUMBER: 'The PO number was corrected from the source. Check it against the original.',
     REVIEW_REQUIRED_SOURCE_CONFLICT_CUSTOMER_HINT: 'The customer name differed from the original. Check the exact buyer name.',
     REVIEW_REQUIRED_SOURCE_CONFLICT_REQUESTED_DELIVERY_DATE: 'The AI delivery date differed from the original. Verify the date.',
-    REVIEW_REQUIRED_UNTRUSTED_CUSTOMER_DOMAIN: 'An AI-supplied customer domain was discarded. Only verified account metadata can establish identity.',
+    SECURITY_IGNORED_UNTRUSTED_CUSTOMER_DOMAIN: 'An untrusted document-derived customer domain was discarded; verified account metadata establishes identity.',
     REVIEW_REQUIRED_SOURCE_CONFLICT_LINES: 'One or more line items disagreed with the source. Verify quantities, SKUs, and prices.',
     REVIEW_REQUIRED_UNVERIFIED_LINES: 'Line items could not be independently verified from the source.',
     REVIEW_REQUIRED_SUSPICIOUS_DOCUMENT_INSTRUCTIONS: 'The source may contain instructions intended to manipulate the AI. Review the document.'

@@ -33,6 +33,7 @@ ALLOWED_TRANSITIONS: dict[
 
     TransactionStatus.CUSTOMER_RESOLUTION: {
         TransactionStatus.PRODUCT_RESOLUTION,
+        TransactionStatus.DUPLICATE_REVIEW,
         TransactionStatus.WAITING_CUSTOMER,
         TransactionStatus.FAILED_MANUAL,
     },
@@ -83,6 +84,7 @@ ALLOWED_TRANSITIONS: dict[
 
     TransactionStatus.ERP_PENDING: {
         TransactionStatus.ERP_CREATED,
+        TransactionStatus.BLOCKED_UNCERTAIN,
         TransactionStatus.FAILED_RETRYABLE,
         TransactionStatus.FAILED_MANUAL,
     },
@@ -104,6 +106,11 @@ ALLOWED_TRANSITIONS: dict[
     },
 
     TransactionStatus.DEGRADED: {
+        TransactionStatus.RECOVERY_PENDING,
+        TransactionStatus.FAILED_MANUAL,
+    },
+
+    TransactionStatus.BLOCKED_UNCERTAIN: {
         TransactionStatus.RECOVERY_PENDING,
         TransactionStatus.FAILED_MANUAL,
     },

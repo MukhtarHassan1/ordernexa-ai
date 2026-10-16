@@ -15,3 +15,31 @@
 #automation-jobs .data-table td { vertical-align:top; }
 #automation-jobs .data-table td small { max-width:17rem; display:block; overflow-wrap:anywhere; }
 @media (max-width:700px){ .toggle-row { grid-template-columns:1fr; } .action-footer .button { width:100%; } }
+/* Enterprise hardening UI: explicit decision authority and replay evidence. */
+.summary-strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:12px 0 20px}.summary-strip>div,.compare-card{background:#102336;border:1px solid #304f63;border-radius:10px;padding:13px}.summary-strip small,.compare-grid small{display:block;color:var(--muted);font-size:10px;letter-spacing:.7px}.summary-strip strong,.compare-grid b{display:block;margin-top:4px;font-size:16px;color:#dffaf0}.compare-card{margin:10px 0}.compare-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:10px 0}.mini-code{max-height:160px;overflow:auto;background:#081825;border-radius:7px;padding:8px;font-size:10px;color:#a8d8c7}@media(max-width:700px){.compare-grid{grid-template-columns:1fr 1fr}}
+/* 2026-10-04 product polish: stronger hierarchy, keyboard access and responsive feedback. */
+:root{--focus:#c8ffe7;--surface-hi:#1d3248;--surface-lo:#0f1f31;--glow:0 0 0 1px rgba(103,216,181,.08),0 22px 70px rgba(0,0,0,.18)}
+::selection{background:#67d8b53a;color:#fff}
+body{background:radial-gradient(circle at 92% -8%,rgba(77,154,165,.18),transparent 34%),radial-gradient(circle at 20% 110%,rgba(66,141,119,.08),transparent 28%),var(--base)}
+.sidebar{box-shadow:18px 0 70px rgba(0,0,0,.08)}
+.brand{position:relative}.brand::after{content:'';position:absolute;left:11px;right:11px;bottom:28px;height:1px;background:linear-gradient(90deg,rgba(126,223,184,.5),transparent)}
+.brand-icon{box-shadow:inset 0 1px 0 rgba(255,255,255,.15),0 12px 36px rgba(23,109,94,.2)}
+.nav-item{position:relative;transition:background .16s ease,border-color .16s ease,color .16s ease,transform .16s ease}
+.nav-item:hover{transform:translateX(2px)}.nav-item.selected::before{content:'';position:absolute;left:-1px;top:9px;bottom:9px;width:3px;border-radius:4px;background:var(--bright)}
+header{box-shadow:0 12px 34px rgba(0,0,0,.06)}
+.refresh-meta{font-size:10px;color:#7895a7;letter-spacing:.45px;white-space:nowrap}
+.metric,.panel,.card,.compare-card{transition:transform .18s ease,border-color .18s ease,box-shadow .18s ease}
+.metric:hover,.card:hover{transform:translateY(-2px);border-color:#41657a;box-shadow:var(--glow)}
+.panel{box-shadow:0 18px 65px rgba(0,0,0,.1)}
+.metric-value{font-variant-numeric:tabular-nums}.data-table td,.data-table th{font-variant-numeric:tabular-nums}
+.button{transition:transform .12s ease,background .12s ease,border-color .12s ease,box-shadow .12s ease}.button:hover{transform:translateY(-1px)}.button:active{transform:translateY(0)}
+button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible,a:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.flash{position:sticky;top:88px;z-index:20;box-shadow:0 16px 40px rgba(0,0,0,.2)}
+.search,textarea,select,input[type=password],input[type=file]{transition:border-color .14s ease,box-shadow .14s ease,background .14s ease}.search:focus,textarea:focus,select:focus,input[type=password]:focus{box-shadow:0 0 0 3px rgba(103,216,181,.10);background:#12283d}
+.list-row{transition:background .14s ease}.list-row:hover{background:rgba(255,255,255,.018)}
+.tag,.pill{border:1px solid rgba(255,255,255,.05)}
+.code{box-shadow:inset 0 1px 0 rgba(255,255,255,.03)}
+.modal{width:min(440px,calc(100vw - 32px));box-shadow:0 30px 120px rgba(0,0,0,.45)}
+footer{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+@media(max-width:700px){.refresh-meta{display:none}.content{padding-bottom:18px}.metrics{gap:10px}.metric{min-height:116px}.nav-item:hover{transform:none}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
